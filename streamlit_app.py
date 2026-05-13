@@ -336,9 +336,9 @@ def overview_page():
     if not prod_summary.empty and 'Actual_Purchase_Rate' in prod_summary.columns:
         top_df = prod_summary.sort_values(by='Actual_Purchase_Rate', ascending=False).head(10)
         chart = alt.Chart(top_df).mark_bar().encode(
-            x=alt.X('Actual_Purchase_Rate:Q', title='Purchase Rate (%)'),
-            y=alt.Y('Product_Row:N', sort='-x', title='Product Combination'),
-            tooltip=['Brand','Price','Color','Spec','GPS','Actual_Purchase_Rate']
+        x=alt.X('Actual_Purchase_Rate:Q', title='Purchase Rate (%)'),
+        y=alt.Y('Product_Row:N', sort='-x', title='Product Combination'),
+        tooltip=['Brand','Price_Level','Color','Spec','GPS','Actual_Purchase_Rate']
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
         st.markdown(
