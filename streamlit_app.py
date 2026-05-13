@@ -113,41 +113,79 @@ def load_rfm_data():
 
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def load_product_summary():
-    """Load product performance summary from logistic regression output.
-    Reads the 'Product_Summary' sheet and adds descriptive columns
-    based on the design file.
     """
-    # logistic report path
+    Load product performance summary from logistic regression output.
+    This version avoids duplicate column names after merging the product design file.
+    """
     path = os.path.join(DATA_DIR, "ridge_logit_customer_specific_report_20260508_110837.xlsx")
+
     if not os.path.isfile(path):
         st.error("Missing logistic regression output file in data folder.")
         return pd.DataFrame()
+
     prod_summary = pd.read_excel(path, sheet_name="Product_Summary")
 
-    # design file to map product attributes
     design_path = os.path.join(DATA_DIR, "正交設計_產品組合.xlsx")
-    design_df = pd.read_excel(design_path)
-    # create a key to merge: original data uses 1..22 as product_row; design file has no index.
-    # We'll simply attach the design info in the order they appear (22 rows)
-    if len(prod_summary) == len(design_df):
-        combined = prod_summary.join(design_df)
+
+    if os.path.isfile(design_path):
+        design_df = pd.read_excel(design_path)
+
+        design_df = design_df.rename(columns={
+            "組合_品牌": "Design_Brand",
+            "組合_原價(轉換後)": "Design_Price_Level",
+            "組合_錶盤顏色": "Design_Color",
+            "組合_螺紋類型": "Design_Spec",
+            "組合_GPS天線": "Design_GPS",
+            "對應 ASIN": "Design_ASIN"
+        })
+
+        keep_cols = [
+            "Design_Brand",
+            "Design_Price_Level",
+            "Design_Color",
+            "Design_Spec",
+            "Design_GPS",
+            "Design_ASIN"
+        ]
+
+        design_df = design_df[[col for col in keep_cols if col in design_df.columns]].copy()
+
+        if len(prod_summary) == len(design_df):
+            combined = pd.concat(
+                [
+                    prod_summary.reset_index(drop=True),
+                    design_df.reset_index(drop=True)
+                ],
+                axis=1
+            )
+        else:
+            combined = prod_summary.copy()
     else:
         combined = prod_summary.copy()
-        combined = combined.assign(組合_品牌=None, 組合_原價=None, 組合_錶盤顏色=None,
-                                    組合_螺紋類型=None, 組合_GPS天線=None, 對應ASIN=None)
-    # rename Chinese columns to English
-    combined = combined.rename(columns={
-        '組合_品牌': 'Brand',
-        '組合_原價(轉換後)': 'Price_Level',
-        '組合_錶盤顏色': 'Color',
-        '組合_螺紋類型': 'Spec',
-        '組合_GPS天線': 'GPS',
-        '對應 ASIN': 'ASIN'
-    })
-    # ensure purchase rate is numeric
-    if 'Actual_Purchase_Rate' in combined.columns:
-        combined['Actual_Purchase_Rate'] = pd.to_numeric(combined['Actual_Purchase_Rate'], errors='coerce')
+
+    combined = combined.loc[:, ~combined.columns.duplicated()].copy()
+
+    combined["Brand"] = combined.get("Design_Brand", combined.get("Brand", None))
+    combined["Price_Level"] = combined.get("Design_Price_Level", combined.get("price", None))
+    combined["Color"] = combined.get("Design_Color", combined.get("Color", None))
+    combined["Spec"] = combined.get("Design_Spec", combined.get("Spec", None))
+    combined["GPS"] = combined.get("Design_GPS", combined.get("GPS", None))
+    combined["ASIN"] = combined.get("Design_ASIN", combined.get("ASIN", None))
+
+    if "Actual_Purchase_Rate" in combined.columns:
+        combined["Actual_Purchase_Rate"] = pd.to_numeric(
+            combined["Actual_Purchase_Rate"],
+            errors="coerce"
+        )
+
+    if "Mean_Predicted_Probability" in combined.columns:
+        combined["Mean_Predicted_Probability"] = pd.to_numeric(
+            combined["Mean_Predicted_Probability"],
+            errors="coerce"
+        )
+
     return combined
 
 
