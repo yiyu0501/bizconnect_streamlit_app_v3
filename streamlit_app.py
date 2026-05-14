@@ -383,6 +383,12 @@ def load_reviews_detail() -> pd.DataFrame:
         content_col = "Review_Content" if "Review_Content" in df.columns else None
         df["Review_Text"] = df[content_col] if content_col else ""
     df["ASIN"] = df.get("ASIN", "").astype(str)
+    if "Review_Date" in df.columns:
+        df["Review_Date"] = pd.to_datetime(df["Review_Date"], errors="coerce")
+    else:
+        df["Review_Date"] = pd.NaT
+    if "Product_Row" in df.columns:
+        df["Product_Row"] = to_numeric(df["Product_Row"], 0).astype(int)
     return df
 
 
@@ -558,6 +564,73 @@ def campaign_copy_templates(route: str, product_row: pd.Series, offer: str = "")
         "AI 圖片 Prompt": f"Create a professional Amazon product image for an automotive gauge. Show a {color} gauge installed in a car dashboard. Add clean callout labels for {spec}, fitment guide, and easy installation. Style: {pkg['image_style']}. Premium, realistic, conversion-focused.",
         "短影音腳本": f"3秒痛點：買錯規格很麻煩。5秒解法：用清楚的 {spec} 與安裝確認降低風險。5秒展示：{brand} {color} 儀表實裝與功能重點。3秒 CTA：立即查看適合你的款式。",
     }
+
+
+
+def campaign_brief_prompt(route: str, offer: str, batch: pd.DataFrame, objective: str, video_asset: str = "尚未上傳素材", custom_note: str = "") -> str:
+    """Generate a copy-ready prompt for ChatGPT / Gemini / Canva / CapCut."""
+    if batch is None or batch.empty:
+        audience_size = 0
+        avg_prob = 0
+        top_product = "尚未選定"
+        top_message = "尚未產生"
+    else:
+        audience_size = len(batch)
+        avg_prob = batch["預測購買機率(%)"].mean() if "預測購買機率(%)" in batch.columns else 0
+        top_product = batch["Product_Label"].mode().iloc[0] if "Product_Label" in batch.columns and not batch["Product_Label"].mode().empty else "尚未選定"
+        top_message = batch["核心話術"].mode().iloc[0] if "核心話術" in batch.columns and not batch["核心話術"].mode().empty else "尚未產生"
+    return f"""你是一位跨境電商行銷企劃，請根據以下資料，產出可用於 Amazon / EDM / Meta 廣告 / 短影音的行銷素材草稿。\n\n【專案背景】\n品牌／廠商：技銓 VivaVictors / PEP with VivaVictors\n產品類型：汽車儀表、GPS 儀表、替換型儀表與相關配件\n目前定位：降低跨境買家買錯規格、安裝不合與功能不確定的風險。\n\n【本次活動目標】\n{objective}\n\n【受眾與資料狀態】\n受眾人數：約 {audience_size:,} 人\n平均預測購買機率：約 {avg_prob:.2f}%\n主要推薦商品：{top_product}\n素材路線：{route}\n優惠級距：{offer}\n目前對應影片素材：{video_asset}\n核心話術：{top_message}\n\n【請輸出】\n1. 一段 15 秒短影音腳本，分成 0-3 秒痛點、3-8 秒產品解法、8-12 秒證據、12-15 秒 CTA。\n2. Amazon Listing 主圖與 A+ Content 的版面建議。\n3. 5 個 Amazon bullet points。\n4. 2 個 EDM 主旨與一段 EDM 內文。\n5. 3 則 Meta / IG 廣告文案。\n6. 一段可以貼到 AI 圖像或影片工具的 prompt。\n\n【語氣限制】\n請用專業、乾淨、跨境電商可用的語氣，不要誇大療效或保證轉換率。強調規格確認、安裝安心、功能可靠與降低買錯風險。\n\n【補充要求】\n{custom_note if custom_note else '無'}\n"""
+
+
+def video_material_library(user_assets: dict | None = None) -> pd.DataFrame:
+    """A simple editable material library concept. URLs are optional and can be pasted by users."""
+    user_assets = user_assets or {}
+    rows = [
+        ["影片A", "技術規格型", "規格／安裝確認", "NPT / SAE、尺寸、安裝步驟、爆炸圖", "技術規格型、性能規格導向客群", user_assets.get("影片A", "尚未上傳正式素材")],
+        ["影片B", "實用功能型", "GPS / 日常替換", "GPS、Plug & Play、功能比較、安裝前後對比", "主流實用客群、功能可靠需求", user_assets.get("影片B", "尚未上傳正式素材")],
+        ["影片C", "風格美學型", "車內搭配與色系", "實裝圖、顏色比較、內裝質感", "風格美學與內裝搭配客群", user_assets.get("影片C", "尚未上傳正式素材")],
+        ["影片D", "價格誘因型", "限時優惠 / Bundle", "折扣、組合包、免運、清庫存", "價格敏感或沉睡喚回客群", user_assets.get("影片D", "尚未上傳正式素材")],
+    ]
+    return pd.DataFrame(rows, columns=["素材代號", "素材路線", "素材目的", "畫面重點", "適用客群", "目前素材狀態／連結"])
+
+
+def product_group_role(row: pd.Series) -> tuple[str, str, str]:
+    """Assign a practical group to product-combination audiences."""
+    route = infer_marketing_route(row)
+    rate = float(row.get("Actual_Purchase_Rate", 0) or 0)
+    tag = str(row.get("Strategy_Tag", ""))
+    if route == "技術規格型":
+        return "規格性能組", "主打規格清楚、NPT/SAE、安裝確認與性能感。", "技術規格圖、安裝確認清單、專業語氣 EDM"
+    if route == "風格美學型":
+        return "風格美學組", "主打車內搭配、特殊色系與個人化外觀。", "實裝圖、顏色比較、社群視覺素材"
+    if route == "價格誘因型" or "需要檢討" in tag or rate < 2:
+        return "價格促銷／檢討組", "用優惠測試轉換，但若商品表現低，先改善 Listing 再投放。", "限時優惠、Bundle、頁面優化與低分評論修正"
+    if route == "實用功能型":
+        return "功能實用組", "主打 GPS、可靠功能、好安裝與日常替換。", "功能比較圖、GPS 解法短片、Amazon Sponsored Products"
+    return "主流轉換組", "主打主流品牌、黑白色、價格透明與穩定轉換。", "熱銷款 EDM、搜尋廣告、再行銷名單"
+
+
+def review_window_filter(reviews: pd.DataFrame, preset: str, start_date=None, end_date=None) -> pd.DataFrame:
+    """Filter reviews by preset using the latest date in data as reference."""
+    if reviews.empty or "Review_Date" not in reviews.columns or reviews["Review_Date"].dropna().empty:
+        return reviews.copy()
+    df = reviews.dropna(subset=["Review_Date"]).copy()
+    max_date = df["Review_Date"].max()
+    if preset == "全部資料":
+        return df
+    if preset == "最近 7 天":
+        return df[df["Review_Date"] >= max_date - pd.Timedelta(days=7)]
+    if preset == "最近 30 天":
+        return df[df["Review_Date"] >= max_date - pd.Timedelta(days=30)]
+    if preset == "最近 90 天":
+        return df[df["Review_Date"] >= max_date - pd.Timedelta(days=90)]
+    if preset == "最近 365 天":
+        return df[df["Review_Date"] >= max_date - pd.Timedelta(days=365)]
+    if preset == "自訂日期" and start_date is not None and end_date is not None:
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+        return df[(df["Review_Date"] >= start) & (df["Review_Date"] < end)]
+    return df
 
 def overview_page():
     render_header()
@@ -1452,13 +1525,79 @@ def recommendation_page():
 
     st.markdown("""
     <div class="vv-action"><b>本頁定位：</b>這裡不是要替每位顧客拍一支完全不同的廣告，而是建立「準個人化行銷」流程：
-    依據顧客偏好與推薦商品，把顧客分配到不同素材路線、話術、優惠級距與投放通路。這比所有人看到同一支廣告更精準，也比完全一人一廣告更可落地。</div>
+    依據顧客偏好與推薦商品，把顧客分配到不同素材路線、話術、優惠級距與投放通路。行銷人員可以調整素材、優惠與活動目標，再輸出給 ChatGPT、Canva、CapCut 或其他 AI 工具使用。</div>
     """, unsafe_allow_html=True)
 
     audience = build_campaign_audience(recs, products, rfm)
-    tab1, tab2, tab3, tab4 = st.tabs(["批次投放工作台", "素材與優惠規則", "單一顧客查詢", "A/B 測試與迭代"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["活動設定產生器", "批次投放工作台", "素材庫與規則", "單一顧客查詢", "A/B 測試與迭代"])
 
     with tab1:
+        st.subheader("活動設定產生器：把資料建議轉成可執行的行銷 Brief")
+        st.caption("這裡保留系統建議，但讓行銷人員可以依實際預算、庫存與品牌語氣調整素材與優惠。")
+        if audience.empty:
+            st.info("目前無法建立批次投放名單。")
+        else:
+            c1, c2, c3 = st.columns(3)
+            route_options = sorted(audience["行銷素材路線"].dropna().unique().tolist())
+            recommended_route = audience["行銷素材路線"].mode().iloc[0] if not audience["行銷素材路線"].mode().empty else route_options[0]
+            route = c1.selectbox("本次主素材路線", route_options, index=route_options.index(recommended_route) if recommended_route in route_options else 0)
+
+            offer_options = ["依系統建議", "無折扣／會員感訊息", "低誘因：0–5% 或免運", "中誘因：5–10%", "強誘因：10–15% 或清庫存券", "暫緩折扣，先修 Listing"]
+            offer_choice = c2.selectbox("優惠級距", offer_options)
+
+            objective = c3.selectbox("本次活動目標", ["短期提升轉換", "新品或主推款曝光", "清庫存與促銷", "品牌定位與信任建立", "Listing 改善後再測試"])
+
+            f1, f2 = st.columns(2)
+            product_rows = sorted(audience["Product_Row"].dropna().astype(int).unique().tolist())
+            chosen_rows = f1.multiselect("限制推薦商品組合（可不選）", product_rows, default=[])
+            min_prob = f2.slider("最低預測購買機率門檻", min_value=0.0, max_value=60.0, value=0.0, step=1.0)
+
+            batch = audience[audience["行銷素材路線"] == route].copy()
+            if chosen_rows:
+                batch = batch[batch["Product_Row"].isin(chosen_rows)]
+            batch = batch[batch["預測購買機率(%)"] >= min_prob]
+            if offer_choice != "依系統建議":
+                batch["優惠級距"] = offer_choice
+                batch["優惠理由"] = "由行銷人員依活動目標手動調整。"
+
+            selected_offer = offer_choice if offer_choice != "依系統建議" else (batch["優惠級距"].mode().iloc[0] if len(batch) and not batch["優惠級距"].mode().empty else "依系統建議")
+            pkg = creative_package(route)
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("本次受眾數", f"{len(batch):,}")
+            k2.metric("平均預測購買機率", f"{batch['預測購買機率(%)'].mean():.2f}%" if len(batch) else "0.00%")
+            k3.metric("素材路線", route)
+            k4.metric("優惠級距", selected_offer)
+
+            st.markdown(f"""
+            <div class="vv-card"><b>建議素材方向：</b>{pkg['video']}<br>
+            <b>核心話術：</b>{pkg['copy']}<br>
+            <b>建議通路：</b>{pkg['channel']}<br>
+            <b>設計語氣：</b>{pkg['image_style']}</div>
+            """, unsafe_allow_html=True)
+
+            st.subheader("目前活動 Brief：可直接複製給 ChatGPT / Canva / CapCut")
+            asset_label = pkg["video"] + "（目前若尚未有正式影片，可先用 AI 圖像/影片工具產 demo）"
+            custom_note = st.text_area("補充給 AI 的限制或要求（可選）", "請做成跨境電商 Amazon / Meta 可用的乾淨科技感素材，避免誇大效果，文字簡潔。", height=90)
+            prompt = campaign_brief_prompt(route, selected_offer, batch, objective, asset_label, custom_note)
+            st.text_area("一鍵複製 Prompt", prompt, height=360)
+            st.download_button(
+                "下載本次活動 Brief TXT",
+                prompt.encode("utf-8-sig"),
+                file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_campaign_ai_brief.txt",
+                mime="text/plain",
+            )
+            st.markdown("""
+            <div class="vv-note"><b>為什麼不直接串接 AI API？</b>競賽版先採「可複製 Prompt」較穩定，避免 API 金鑰、帳號權限與顧客資料外流問題。正式企業版可再串接 OpenAI / Gemini / Canva / CapCut API 或內部 CRM。</div>
+            """, unsafe_allow_html=True)
+
+            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
+            if export_cols:
+                csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig")
+                st.download_button("下載本次活動受眾名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_campaign_audience.csv", mime="text/csv")
+            data_source("ridge_logit_customer_specific_report_*.xlsx + RFM_CAI 統整.xlsx", "以推薦模型建立受眾，以行銷人員調整的素材路線與優惠級距輸出活動 Brief")
+
+    with tab2:
         st.subheader("批次投放工作台：一次找到適合某類素材的客群")
         st.caption("行銷人員日常使用時，不必一個一個查 Customer_ID；先選素材路線、商品或優惠級距，再輸出受眾名單做 EDM、再行銷或廣告測試。")
         if audience.empty:
@@ -1498,24 +1637,25 @@ def recommendation_page():
             data_source("ridge_logit_customer_specific_report_*.xlsx + RFM_CAI 統整.xlsx", "以每位顧客 Top 1 推薦商品建立批次投放名單")
 
             export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
-            csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig")
-            st.download_button("下載目前篩選名單 CSV", csv, file_name="personalized_campaign_audience.csv", mime="text/csv")
-
-    with tab2:
-        st.subheader("素材與優惠規則：用有限素材做準個人化")
-        rule_df = pd.DataFrame([
-            ["技術規格型", "影片A：技術規格／安裝確認", "規格精準、安裝安心、降低買錯", "NPT / SAE 規格圖、安裝步驟、性能感", "高意願可少折扣；中意願給免運或 5%"],
-            ["實用功能型", "影片B：實用功能／日常使用", "GPS、功能完整、穩定可靠", "功能 icon、使用情境、比較表", "用 5–10% 或組合優惠促進轉換"],
-            ["風格美學型", "影片C：車內風格／顏色搭配", "內裝搭配、特殊色系、質感", "實裝圖、車內情境、色系比較", "少折扣，強調稀有感與視覺價值"],
-            ["價格誘因型", "影片D：限時優惠／高 CP 值", "限時、免運、組合價、CP 值", "促銷圖卡、倒數、優惠券", "10–15% 或清庫存券，僅給需要刺激者"],
-        ], columns=["素材路線", "主影片", "話術方向", "設計重點", "優惠原則"])
-        st.dataframe(rule_df, width="stretch", hide_index=True)
-        st.markdown("""
-        <div class="vv-note"><b>行銷邏輯：</b>不是 1,024 位顧客各拍一支影片，而是把「商品推薦 × 偏好路線 × 話術 × 優惠」模組化。
-        例如同一支技術規格影片，可以搭配不同商品、不同規格文案與不同優惠級距，形成多組個人化素材。</div>
-        """, unsafe_allow_html=True)
+            csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig") if export_cols else b""
+            st.download_button("下載目前篩選名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_personalized_campaign_audience.csv", mime="text/csv")
 
     with tab3:
+        st.subheader("素材庫與優惠規則：目前先用素材代號，未來可接實際影片連結")
+        st.caption("正式企業版可將影片 URL、素材縮圖或雲端檔案路徑接入此表；目前競賽版先以素材代號管理，讓行銷人員知道每一路線需要什麼素材。")
+        a1, a2 = st.columns(2)
+        asset_a = a1.text_input("影片A 連結／素材備註", "")
+        asset_b = a2.text_input("影片B 連結／素材備註", "")
+        asset_c = a1.text_input("影片C 連結／素材備註", "")
+        asset_d = a2.text_input("影片D 連結／素材備註", "")
+        lib = video_material_library({"影片A": asset_a or "尚未上傳正式素材", "影片B": asset_b or "尚未上傳正式素材", "影片C": asset_c or "尚未上傳正式素材", "影片D": asset_d or "尚未上傳正式素材"})
+        st.dataframe(lib, width="stretch", hide_index=True)
+        st.markdown("""
+        <div class="vv-note"><b>行銷邏輯：</b>不是 1,024 位顧客各拍一支影片，而是把「商品推薦 × 偏好路線 × 話術 × 優惠」模組化。
+        同一支主影片可以搭配不同商品、不同規格文案與不同優惠級距，形成多組準個人化素材。</div>
+        """, unsafe_allow_html=True)
+
+    with tab4:
         st.subheader("單一顧客查詢：保留一對一推薦，但用來產生素材，不只看 Top 5")
         customer_ids = sorted(recs["Customer_ID"].dropna().astype(str).unique().tolist())
         query = st.text_input("快速搜尋 Customer_ID", "")
@@ -1542,15 +1682,17 @@ def recommendation_page():
         data_source("ridge_logit_customer_specific_report_*.xlsx", "Recommendation_Top5 工作表；此處以單一顧客查詢生成素材草稿")
 
         st.subheader("AI 素材輸出草稿")
-        tabs = st.tabs(["EDM", "Meta/IG 廣告", "Amazon 五點", "AI 圖片 Prompt", "短影音腳本"])
+        tabs = st.tabs(["EDM", "Meta/IG 廣告", "Amazon 五點", "AI 圖片 Prompt", "短影音腳本", "完整 GPT Brief"])
         tabs[0].text_area("EDM 主旨", templates["EDM 主旨"], height=80)
         tabs[0].text_area("EDM 內文", templates["EDM 內文"], height=150)
         tabs[1].text_area("Meta/IG 廣告文案", templates["Meta/IG 廣告文案"], height=130)
         tabs[2].text_area("Amazon Bullet Points", templates["Amazon 五點描述"], height=170)
         tabs[3].text_area("可貼到 Canva / Firefly / AI 圖像工具", templates["AI 圖片 Prompt"], height=150)
         tabs[4].text_area("可貼到 CapCut / 短影音腳本工具", templates["短影音腳本"], height=130)
+        single_prompt = campaign_brief_prompt(route, offer, pd.DataFrame([best]), "單一顧客個人化素材草稿", creative_package(route)["video"], "請根據單一顧客推薦商品產生更完整的廣告素材。")
+        tabs[5].text_area("完整 Brief，可直接複製到 ChatGPT", single_prompt, height=300)
 
-    with tab4:
+    with tab5:
         st.subheader("A/B 測試與迭代：讓創意變成可驗證的成效")
         st.markdown("""
         <div class="vv-warning"><b>重要原則：</b>目前資料只能支撐「推薦與素材分配建議」，不能保證每個人一定會轉換。
@@ -1571,31 +1713,103 @@ def recommendation_page():
 
 
 def customer_list_page():
-    st.header("顧客名單｜RFM／CAI 行銷策略")
+    st.header("顧客名單｜RFM／CAI 與 22 產品組合策略")
     rfm = load_rfm()
-    if rfm.empty:
-        st.info("目前找不到 RFM／CAI 資料。")
-        return
-    st.markdown("名單本身沒有價值，必須轉成行銷動作。本頁提供不同顧客價值分群的經營方式。")
-    strategy_df = pd.DataFrame([
-        ["高價值／活躍顧客", "提高回購與客單", "新品預告、會員專屬優惠、高單價款推薦", "EDM、會員訊息、再行銷名單"],
-        ["潛力顧客", "促成首次或二次購買", "規格指南、商品比較、熱門款推薦", "EDM、商品頁推薦、搜尋廣告"],
-        ["價格敏感顧客", "用誘因提高轉換", "折扣券、免運、組合價、限時優惠", "促銷頁、再行銷廣告"],
-        ["沉睡顧客", "喚回互動", "回購券、熱門商品、評論佳商品", "再行銷廣告、喚回 EDM"],
-        ["資料不足顧客", "先蒐集偏好", "推通用高購買率商品、觀察點擊與收藏", "EDM 測試、站內推薦"],
-    ], columns=["顧客類型", "行銷目標", "建議做法", "建議通路"])
-    st.dataframe(strategy_df, width="stretch", hide_index=True)
+    recs = load_recommendations()
+    products = load_product_summary()
 
-    counts = rfm["RFM_Label"].value_counts().reset_index()
-    counts.columns = ["RFM_Label", "Customer_Count"]
-    fig = px.bar(counts, x="Customer_Count", y="RFM_Label", orientation="h", title="RFM 顧客價值分群人數")
-    fig.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig, width="stretch")
-    data_source("RFM_CAI 統整.xlsx", "RFM 與 CAI 顧客標籤")
+    st.markdown("名單本身沒有價值，必須轉成行銷動作。本頁保留 RFM／CAI 名單策略，同時新增以 22 個產品組合為基礎的客群操作方式，讓行銷人員知道每一群該推什麼、怎麼推、用什麼素材。")
+    tab1, tab2 = st.tabs(["RFM／CAI 名單策略", "22 產品組合客群策略"])
 
-    selected = st.selectbox("選擇分群查看名單", counts["RFM_Label"].tolist())
-    seg = rfm[rfm["RFM_Label"] == selected].copy()
-    st.dataframe(seg.head(200), width="stretch", hide_index=True)
+    with tab1:
+        if rfm.empty:
+            st.info("目前找不到 RFM／CAI 資料。")
+        else:
+            strategy_df = pd.DataFrame([
+                ["高價值／活躍顧客", "提高回購與客單", "新品預告、會員專屬優惠、高單價款推薦", "EDM、會員訊息、再行銷名單"],
+                ["潛力顧客", "促成首次或二次購買", "規格指南、商品比較、熱門款推薦", "EDM、商品頁推薦、搜尋廣告"],
+                ["價格敏感顧客", "用誘因提高轉換", "折扣券、免運、組合價、限時優惠", "促銷頁、再行銷廣告"],
+                ["沉睡顧客", "喚回互動", "回購券、熱門商品、評論佳商品", "再行銷廣告、喚回 EDM"],
+                ["資料不足顧客", "先蒐集偏好", "推通用高購買率商品、觀察點擊與收藏", "EDM 測試、站內推薦"],
+            ], columns=["顧客類型", "行銷目標", "建議做法", "建議通路"])
+            st.dataframe(strategy_df, width="stretch", hide_index=True)
+
+            counts = rfm["RFM_Label"].value_counts().reset_index()
+            counts.columns = ["RFM_Label", "Customer_Count"]
+            fig = px.bar(counts, x="Customer_Count", y="RFM_Label", orientation="h", title="RFM 顧客價值分群人數")
+            fig.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig, width="stretch")
+            data_source("RFM_CAI 統整.xlsx", "RFM 與 CAI 顧客標籤；適合做名單經營，但需搭配可聯絡通路才能實際投放")
+
+            selected = st.selectbox("選擇分群查看名單", counts["RFM_Label"].tolist())
+            seg = rfm[rfm["RFM_Label"] == selected].copy()
+            st.dataframe(seg.head(200), width="stretch", hide_index=True)
+
+    with tab2:
+        st.subheader("22 產品組合客群：以推薦商品作為可操作名單")
+        if recs.empty or products.empty:
+            st.info("目前找不到推薦模型或商品資料。")
+            return
+        audience = build_campaign_audience(recs, products, rfm)
+        if audience.empty:
+            st.info("目前無法建立產品組合客群。")
+            return
+
+        # Product-level strategy and role mapping
+        product_roles = products.copy()
+        role_info = product_roles.apply(product_group_role, axis=1)
+        product_roles["產品客群組"] = [x[0] for x in role_info]
+        product_roles["策略說明"] = [x[1] for x in role_info]
+        product_roles["建議素材／通路"] = [x[2] for x in role_info]
+        product_roles = product_roles[["Product_Row", "Product_Label", "產品客群組", "Strategy_Tag", "Actual_Purchase_Rate", "Mean_Predicted_Probability", "策略說明", "建議素材／通路"]].copy()
+
+        audience = audience.merge(product_roles[["Product_Row", "產品客群組", "策略說明", "建議素材／通路"]], on="Product_Row", how="left")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("可操作顧客數", f"{audience['Customer_ID'].nunique():,}")
+        c2.metric("產品組合數", f"{audience['Product_Row'].nunique():,}")
+        c3.metric("主要客群組", audience["產品客群組"].mode().iloc[0] if not audience["產品客群組"].mode().empty else "—")
+
+        st.markdown("""
+        <div class="vv-note"><b>操作方式：</b>這裡的「22 產品組合客群」不是人口學分群，而是根據每位顧客 Top 1 推薦商品建立的投放名單。行銷人員可以直接選某一個產品組合或某一類產品客群組，下載名單後用於 EDM、再行銷或廣告受眾。</div>
+        """, unsafe_allow_html=True)
+
+        group_summary = audience.groupby(["產品客群組", "行銷素材路線", "優惠級距"], dropna=False).agg(
+            顧客數=("Customer_ID", "nunique"),
+            平均預測購買機率=("預測購買機率(%)", "mean"),
+            代表商品=("Product_Label", lambda x: x.mode().iloc[0] if not x.mode().empty else "—"),
+            建議素材通路=("建議素材／通路", lambda x: x.mode().iloc[0] if not x.mode().empty else "—"),
+        ).reset_index().sort_values("顧客數", ascending=False)
+        group_summary["平均預測購買機率"] = group_summary["平均預測購買機率"].map(lambda x: f"{x:.2f}%")
+        st.dataframe(group_summary, width="stretch", hide_index=True)
+
+        fig = px.bar(group_summary, x="顧客數", y="產品客群組", color="行銷素材路線", orientation="h", title="產品組合客群規模與素材路線")
+        fig.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("依產品組合查看名單與建議")
+        product_select = st.selectbox("選擇產品組合", sorted(audience["Product_Row"].dropna().astype(int).unique().tolist()))
+        sub = audience[audience["Product_Row"] == product_select].copy()
+        if len(sub):
+            first = sub.iloc[0]
+            st.markdown(f"""
+            <div class="vv-action"><b>產品組合 #{int(product_select)} 建議：</b><br>
+            客群組：{first.get('產品客群組', '—')}<br>
+            代表商品：{first.get('Product_Label', '—')}<br>
+            核心話術：{first.get('核心話術', '—')}<br>
+            建議素材／通路：{first.get('建議素材／通路', '—')}<br>
+            優惠級距：{first.get('優惠級距', '—')}</div>
+            """, unsafe_allow_html=True)
+            cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "產品客群組", "預測購買機率(%)", "行銷素材路線", "優惠級距", "建議通路", "RFM_Label", "CAI_Label"] if c in sub.columns]
+            st.dataframe(sub[cols].sort_values("預測購買機率(%)", ascending=False).head(200), width="stretch", hide_index=True)
+            csv = sub[cols].to_csv(index=False).encode("utf-8-sig")
+            st.download_button("下載此產品組合顧客名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_product_{int(product_select)}_audience.csv", mime="text/csv")
+
+        with st.expander("22 產品組合策略對照表", expanded=False):
+            view = product_roles.copy()
+            view["Actual_Purchase_Rate"] = view["Actual_Purchase_Rate"].map(lambda x: f"{x:.2f}%")
+            view["Mean_Predicted_Probability"] = view["Mean_Predicted_Probability"].map(lambda x: f"{x:.2f}%")
+            st.dataframe(view, width="stretch", hide_index=True)
+        data_source("ridge_logit_customer_specific_report_*.xlsx + 正交設計_產品組合.xlsx", "以 Top 1 推薦商品建立 22 產品組合名單，再彙整成可投放的產品客群組")
 
 
 def review_insights_page():
@@ -1605,40 +1819,86 @@ def review_insights_page():
     if reviews.empty:
         st.info("目前找不到評論資料。")
         return
-    avg_rating = reviews["Rating"].mean()
-    positive_rate = (reviews["Sentiment_Label"].astype(str).str.contains("正|Positive", regex=True).mean() * 100)
-    usable = reviews[reviews["Motivation_Type"] != "未明確判讀"].copy()
+
+    st.markdown("本頁新增時間篩選，讓行銷人員可以觀察最近一週、最近一個月或指定期間的評論動機變化。評論是會變動的，Listing 改善也應該定期回來檢查。")
+    date_ready = "Review_Date" in reviews.columns and reviews["Review_Date"].dropna().any()
+    if date_ready:
+        min_d = reviews["Review_Date"].min().date()
+        max_d = reviews["Review_Date"].max().date()
+        c0, c1, c2 = st.columns([1.2, 1, 1])
+        preset = c0.selectbox("評論期間", ["全部資料", "最近 7 天", "最近 30 天", "最近 90 天", "最近 365 天", "自訂日期"], index=2)
+        if preset == "自訂日期":
+            start_date = c1.date_input("開始日期", min_d, min_value=min_d, max_value=max_d)
+            end_date = c2.date_input("結束日期", max_d, min_value=min_d, max_value=max_d)
+        else:
+            start_date, end_date = None, None
+        filtered_reviews = review_window_filter(reviews, preset, start_date, end_date)
+        st.caption(f"資料日期範圍：{min_d} ～ {max_d}；目前顯示 {len(filtered_reviews):,} 則評論。")
+    else:
+        preset = "全部資料"
+        filtered_reviews = reviews.copy()
+        st.caption("目前評論資料未包含可解析日期，因此暫以全部資料呈現。")
+
+    if filtered_reviews.empty:
+        st.warning("目前期間沒有評論資料，請切換為較長時間範圍。")
+        return
+
+    avg_rating = filtered_reviews["Rating"].mean()
+    positive_rate = (filtered_reviews["Sentiment_Label"].astype(str).str.contains("正|Positive", regex=True).mean() * 100)
+    usable = filtered_reviews[filtered_reviews["Motivation_Type"] != "未明確判讀"].copy()
     top_mot = usable["Motivation_Type"].mode().iloc[0] if not usable.empty and not usable["Motivation_Type"].mode().empty else "資料不足"
-    c1, c2, c3 = st.columns(3)
-    c1.metric("平均評分", f"{avg_rating:.2f}")
-    c2.metric("正向評論占比", f"{positive_rate:.1f}%")
-    c3.metric("主要可用動機", top_mot)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("期間評論數", f"{len(filtered_reviews):,}")
+    c2.metric("平均評分", f"{avg_rating:.2f}")
+    c3.metric("正向評論占比", f"{positive_rate:.1f}%")
+    c4.metric("主要可用動機", top_mot)
 
     st.markdown("""
     <div class="vv-note"><b>分類說明：</b>「未明確判讀」不作為主要市場區隔，只代表該評論沒有足夠明確的行銷訊號。正式策略會優先使用規格適配、功能可靠、品質信任、外觀搭配與價格敏感等可行動分類。</div>
     """, unsafe_allow_html=True)
+
     mot = usable["Motivation_Type"].value_counts().reset_index()
     mot.columns = ["Motivation_Type", "Review_Count"]
-    fig = px.bar(mot, x="Review_Count", y="Motivation_Type", orientation="h", title="可行動評論動機分布")
-    fig.update_layout(height=420, yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig, width="stretch")
-    data_source("reviews_processed_classified.csv", "評論文字與星等整理後的顧客動機分類")
+    if not mot.empty:
+        fig = px.bar(mot, x="Review_Count", y="Motivation_Type", orientation="h", title=f"可行動評論動機分布｜{preset}")
+        fig.update_layout(height=420, yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig, width="stretch")
+    else:
+        st.info("目前期間沒有可行動評論動機。")
+    data_source("reviews_processed_classified.csv", "評論文字、星等、日期與動機分類；本頁會依期間重新計算指標")
+
+    if date_ready:
+        trend = filtered_reviews.copy()
+        trend["Week"] = trend["Review_Date"].dt.to_period("W").dt.start_time
+        weekly = trend.groupby("Week").agg(評論數=("ASIN", "count"), 平均評分=("Rating", "mean")).reset_index()
+        if len(weekly) > 1:
+            fig2 = px.line(weekly, x="Week", y=["評論數", "平均評分"], markers=True, title="期間評論趨勢：評論數與平均評分")
+            st.plotly_chart(fig2, width="stretch")
 
     st.subheader("評論痛點 → Amazon Listing 改善做法")
     pain_df = pd.DataFrame([
-        ["規格不清楚", "商品圖與五點描述", "加入 NPT / SAE 規格對照表、尺寸圖、適用情境與安裝前確認清單"],
-        ["安裝不確定", "圖片區、FAQ、A+ Content", "用三步驟安裝圖說明如何確認規格，降低退貨風險"],
-        ["功能可靠疑慮", "主圖、影片、五點描述", "補充讀數穩定、GPS 功能、測試情境與使用後效果"],
-        ["品質信任不足", "評論摘要、保固說明", "整理高分評論關鍵句，搭配保固、材質與包裝說明"],
-        ["外觀搭配困難", "情境圖與顏色比較", "補上黑色、米色、白色等車內實裝圖與比較圖"],
-        ["價格敏感", "促銷與組合包", "提供組合價、免運、限時折扣，並說明價格對應的功能價值"],
-    ], columns=["評論痛點", "應改善的位置", "具體作法"])
+        ["規格不清楚", "商品圖與五點描述", "加入 NPT / SAE 規格對照表、尺寸圖、適用情境與安裝前確認清單", "用圖像降低買錯風險"],
+        ["安裝不確定", "圖片區、FAQ、A+ Content", "用三步驟安裝圖說明如何確認規格，降低退貨風險", "把安裝風險前置處理"],
+        ["功能可靠疑慮", "主圖、影片、五點描述", "補充讀數穩定、GPS 功能、測試情境與使用後效果", "把抽象功能轉成具體情境"],
+        ["品質信任不足", "評論摘要、保固說明", "整理高分評論關鍵句，搭配保固、材質與包裝說明", "建立信任與降低猶豫"],
+        ["外觀搭配困難", "情境圖與顏色比較", "補上黑色、米色、白色等車內實裝圖與比較圖", "讓顧客快速想像裝上後效果"],
+        ["價格敏感", "促銷與組合包", "提供組合價、免運、限時折扣，並說明價格對應的功能價值", "不要只降價，要說明為何值得"],
+    ], columns=["評論痛點", "應改善的位置", "具體作法", "行銷目的"])
     st.dataframe(pain_df, width="stretch", hide_index=True)
 
     if not summary.empty:
         st.subheader("ASIN 商品評論摘要")
         st.dataframe(summary.sort_values("Review_Count", ascending=False), width="stretch", hide_index=True)
         data_source("reviews_summary_processed.csv", "依 ASIN 彙整評論數、平均星等與正負評")
+
+    st.subheader("目前期間的低分評論範例")
+    neg = filtered_reviews[filtered_reviews["Rating"] <= 2].copy()
+    cols = [c for c in ["Review_Date", "ASIN", "Rating", "Motivation_Type", "Review_Text"] if c in neg.columns]
+    if not neg.empty and cols:
+        st.dataframe(neg[cols].head(20), width="stretch", hide_index=True)
+    else:
+        st.caption("目前期間沒有低分評論，或資料欄位不足。")
+
 
 
 pages = {
