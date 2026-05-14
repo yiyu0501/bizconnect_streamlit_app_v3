@@ -1,4 +1,6 @@
 from pathlib import Path
+from datetime import datetime
+import json
 
 import pandas as pd
 import plotly.express as px
@@ -643,27 +645,285 @@ def market_segmentation_page():
     """, unsafe_allow_html=True)
 
 
+
+def _norm_score(value: float, min_v: float, max_v: float) -> float:
+    """Normalize a metric to 0-100. If min/max are identical, return 60 as neutral."""
+    try:
+        value = float(value)
+        min_v = float(min_v)
+        max_v = float(max_v)
+    except Exception:
+        return 0.0
+    if max_v == min_v:
+        return 60.0
+    return max(0.0, min(100.0, (value - min_v) / (max_v - min_v) * 100))
+
+
+def _get_segment_products(products: pd.DataFrame, cluster: int) -> pd.DataFrame:
+    """Approximate product mapping for each target segment using product attributes.
+    This does not overwrite the original KMeans result; it translates segment meaning into
+    products that marketers can actually promote.
+    """
+    if products.empty:
+        return pd.DataFrame()
+    brand = products.get("Brand", pd.Series("", index=products.index)).astype(str).str.lower()
+    spec = products.get("Spec_Display", products.get("Spec", pd.Series("", index=products.index))).astype(str).str.lower()
+    color = products.get("Color", pd.Series("", index=products.index)).astype(str)
+    gps = products.get("GPS_Display", products.get("GPS", pd.Series("", index=products.index))).astype(str).str.lower()
+
+    if cluster == 1:
+        mask = brand.str.contains("motor", na=False) | spec.str.contains("npt", na=False)
+    elif cluster == 2:
+        mask = (
+            brand.str.contains("dolphin|faria|speedway", na=False)
+            | gps.str.contains("gps", na=False)
+            | color.isin(["黑色", "白色", "黃色", "綠色", "black", "white", "yellow", "green"])
+        )
+    elif cluster == 3:
+        mask = color.isin(["米色", "藍色", "beige", "blue"])
+    else:
+        mask = pd.Series(False, index=products.index)
+    subset = products[mask].copy()
+    return subset if not subset.empty else products.copy()
+
+
+def build_target_market_scores(weights: dict) -> pd.DataFrame:
+    """Create an evidence-based target market ranking table.
+    Scores are intentionally transparent and adjustable. They combine market segment size,
+    product performance, product fit, review pain clarity, promotion feasibility and benefit potential.
+    """
+    _, segment_summary, source_name = load_market_segments()
+    products = load_product_summary()
+    reviews = load_reviews_detail()
+
+    rows = []
+    # Fallback if the cluster summary is missing.
+    if segment_summary.empty:
+        segment_summary = pd.DataFrame({"Cluster": [1, 2, 3], "Customer_Count": [0, 0, 0], "Share": [0, 0, 0]})
+
+    count_min = float(segment_summary.get("Customer_Count", pd.Series([0])).min())
+    count_max = float(segment_summary.get("Customer_Count", pd.Series([1])).max())
+
+    # Product performance base for normalization.
+    product_perf_values = []
+    revenue_potential_values = []
+    for cluster in [1, 2, 3]:
+        subset = _get_segment_products(products, cluster)
+        product_perf_values.append(float(subset.get("Actual_Purchase_Rate", pd.Series([0])).mean() if not subset.empty else 0))
+        revenue_potential_values.append(float((subset.get("Actual_Purchase_Rate", pd.Series([0])) * subset.get("Price", pd.Series([0]))).mean() if not subset.empty else 0))
+    perf_min, perf_max = min(product_perf_values), max(product_perf_values)
+    rev_min, rev_max = min(revenue_potential_values), max(revenue_potential_values)
+
+    # Review evidence: not perfectly linked to clusters, so this is a strategy-level proxy.
+    review_mot = reviews.get("Motivation_Type", pd.Series(dtype=str)).astype(str) if not reviews.empty else pd.Series(dtype=str)
+    review_text = reviews.get("Review_Text", pd.Series(dtype=str)).astype(str) if not reviews.empty else pd.Series(dtype=str)
+    def review_signal(cluster: int) -> float:
+        if reviews.empty:
+            return 60.0
+        if cluster == 1:
+            keywords = ["規格", "適配", "NPT", "Sae", "安裝", "功能", "可靠"]
+        elif cluster == 2:
+            keywords = ["價格", "CP", "GPS", "品牌", "實用", "功能", "品質"]
+        else:
+            keywords = ["外觀", "顏色", "美學", "內裝", "beige", "blue", "搭配"]
+        joined = (review_mot + " " + review_text).str.lower()
+        hits = sum(joined.str.contains(str(k).lower(), regex=False, na=False).sum() for k in keywords)
+        return min(100.0, 45.0 + hits / max(len(reviews), 1) * 200.0)
+
+    # Manual feasibility reflects how easy it is to execute with current assets.
+    feasibility = {1: 76.0, 2: 90.0, 3: 72.0}
+    product_fit_manual = {1: 88.0, 2: 92.0, 3: 70.0}
+
+    for cluster in [1, 2, 3]:
+        cfg = SEGMENT_CONFIG.get(cluster, {})
+        seg_row = segment_summary[segment_summary["Cluster"].astype(int) == cluster]
+        raw_count = float(seg_row["Customer_Count"].iloc[0]) if not seg_row.empty and "Customer_Count" in seg_row.columns else 0.0
+        share = float(seg_row["Share"].iloc[0]) if not seg_row.empty and "Share" in seg_row.columns else 0.0
+        subset = _get_segment_products(products, cluster)
+        purchase_rate = float(subset.get("Actual_Purchase_Rate", pd.Series([0])).mean() if not subset.empty else 0)
+        revenue_proxy = float((subset.get("Actual_Purchase_Rate", pd.Series([0])) * subset.get("Price", pd.Series([0]))).mean() if not subset.empty else 0)
+        product_count = int(subset.get("Product_Row", pd.Series(dtype=int)).nunique() if not subset.empty else 0)
+
+        metrics = {
+            "市場規模": _norm_score(raw_count, count_min, count_max),
+            "購買表現": _norm_score(purchase_rate, perf_min, perf_max),
+            "商品匹配度": product_fit_manual.get(cluster, 70.0),
+            "評論痛點明確度": review_signal(cluster),
+            "推廣可執行性": feasibility.get(cluster, 70.0),
+            "效益潛力": _norm_score(revenue_proxy, rev_min, rev_max),
+        }
+        total_score = sum(metrics[k] * weights.get(k, 0) for k in metrics)
+        rows.append({
+            "目標市場": cfg.get("name", f"第{cluster}群"),
+            "行銷名稱": cfg.get("business_name", "未命名客群"),
+            "主要需求": cfg.get("need", ""),
+            "資料群別": f"偏好族群 {cluster}",
+            "產品原型數": int(raw_count),
+            "占比": f"{share:.1f}%",
+            "對應商品數": product_count,
+            "平均購買率": f"{purchase_rate:.2f}%",
+            "市場規模": round(metrics["市場規模"], 1),
+            "購買表現": round(metrics["購買表現"], 1),
+            "商品匹配度": round(metrics["商品匹配度"], 1),
+            "評論痛點明確度": round(metrics["評論痛點明確度"], 1),
+            "推廣可執行性": round(metrics["推廣可執行性"], 1),
+            "效益潛力": round(metrics["效益潛力"], 1),
+            "決策分數": round(total_score, 1),
+            "建議訊息": cfg.get("message", ""),
+            "落地做法": cfg.get("landing", ""),
+            "資料來源": f"{source_name}；ridge_logit_customer_specific_report；reviews_processed_classified",
+        })
+    df = pd.DataFrame(rows).sort_values("決策分數", ascending=False).reset_index(drop=True)
+    df["排名"] = range(1, len(df) + 1)
+    return df[["排名", "目標市場", "行銷名稱", "決策分數", "產品原型數", "占比", "對應商品數", "平均購買率", "市場規模", "購買表現", "商品匹配度", "評論痛點明確度", "推廣可執行性", "效益潛力", "建議訊息", "落地做法", "資料來源"]]
+
+
+def preset_weights(preset: str) -> dict:
+    presets = {
+        "短期衝銷售": {"市場規模": .20, "購買表現": .30, "商品匹配度": .15, "評論痛點明確度": .10, "推廣可執行性": .20, "效益潛力": .05},
+        "建立專業品牌": {"市場規模": .10, "購買表現": .15, "商品匹配度": .25, "評論痛點明確度": .25, "推廣可執行性": .15, "效益潛力": .10},
+        "清庫存與促銷": {"市場規模": .25, "購買表現": .20, "商品匹配度": .10, "評論痛點明確度": .10, "推廣可執行性": .15, "效益潛力": .20},
+        "差異化內容行銷": {"市場規模": .10, "購買表現": .10, "商品匹配度": .20, "評論痛點明確度": .30, "推廣可執行性": .20, "效益潛力": .10},
+        "自訂權重": {"市場規模": .20, "購買表現": .25, "商品匹配度": .20, "評論痛點明確度": .15, "推廣可執行性": .15, "效益潛力": .05},
+    }
+    return presets.get(preset, presets["自訂權重"]).copy()
+
+
+def decision_filename(suffix: str) -> str:
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{suffix}"
+
+
 def target_market_page():
-    st.header("目標市場｜技詮優先客群")
-    st.markdown("老師問的核心其實是：技詮到底要先服務誰？本頁將市場區隔轉成目標市場選擇。")
-    st.markdown("""
-    <div class="vv-action"><b>建議優先目標市場：</b><br>
-    技詮應優先鎖定「性能規格導向客群」與「主流實用與價格敏感客群」。前者適合推 Moto Meter Racing 與 NPT 規格商品，後者適合做主流款大量曝光與價格／功能轉換測試。</div>
-    """, unsafe_allow_html=True)
+    st.header("目標市場｜可調整決策工具")
+    st.markdown(
+        "本頁不是直接給固定答案，而是把市場區隔、商品表現、評論痛點與推廣可行性轉成可調整的目標市場排序。行銷人員可以依不同策略情境調整權重，保留本次判斷紀錄，未來再比較成效。"
+    )
+    term_box()
 
-    df = pd.DataFrame([
-        ["第一優先", "性能規格導向客群", "Moto Meter Racing、NPT、Racing 感、安裝精準", "這群買家對規格與性能敏感，最容易被清楚規格與專業感說服", "Moto Meter Racing 主推頁、規格表、安裝示意圖、Performance 文案"],
-        ["第二優先", "主流實用與價格敏感客群", "黑色、GPS、價格、CP 值", "占比最大、最適合做廣告放量與促銷測試", "主流黑色款、折扣、免運、GPS 功能說明"],
-        ["差異化補充", "風格美學與內裝搭配客群", "米色、特殊色系、內裝搭配", "適合做差異化品牌素材，不一定是最大量但有定位價值", "實裝圖、顏色比較、風格情境素材"],
-    ], columns=["優先順序", "目標市場", "關鍵偏好", "選擇理由", "落地行動"])
-    st.dataframe(df, width="stretch", hide_index=True)
-    data_source("KMeans_Final_Result.xlsx", "依 28 種產品偏好原型的市場區隔結果整理")
+    st.subheader("1｜選擇策略情境與決策權重")
+    col_preset, col_note = st.columns([1, 2])
+    with col_preset:
+        preset = st.selectbox(
+            "策略情境",
+            ["短期衝銷售", "建立專業品牌", "清庫存與促銷", "差異化內容行銷", "自訂權重"],
+            index=0,
+            help="不同情境會影響目標市場排序。例如短期衝銷售會提高購買表現與推廣可行性權重；建立專業品牌會提高商品匹配度與評論痛點權重。",
+        )
+    with col_note:
+        st.markdown(
+            "<div class='vv-note'><b>判讀原則：</b>目標市場不是憑一句話決定，而是由市場規模、購買表現、商品匹配、評論痛點、推廣可執行性與效益潛力共同評估。權重可以依老闆策略、庫存壓力或市場時事調整。</div>",
+            unsafe_allow_html=True,
+        )
 
-    st.subheader("Moto Meter Racing 應該主推哪一群？")
-    st.markdown("""
-    <div class="vv-card"><b>結論：</b>Moto Meter Racing 應優先主推「性能規格導向客群」。<br>
-    理由是此群對 Moto Meter Racing、NPT 規格與 Racing 感的偏好最明確。行銷上不要只說品牌名稱，而要把它轉成買家看得懂的價值：<b>規格清楚、安裝風險低、性能感強、適合重度 DIY 或改裝需求。</b></div>
-    """, unsafe_allow_html=True)
+    base = preset_weights(preset)
+    st.caption("權重合計會自動正規化成 100%，因此你可以依策略重要性調整，不需要手動算總和。")
+    w_cols = st.columns(3)
+    raw_weights = {}
+    labels = list(base.keys())
+    for i, metric in enumerate(labels):
+        with w_cols[i % 3]:
+            raw_weights[metric] = st.slider(metric, min_value=0, max_value=50, value=int(base[metric] * 100), step=5)
+    total_raw = sum(raw_weights.values()) or 1
+    weights = {k: v / total_raw for k, v in raw_weights.items()}
+
+    score_df = build_target_market_scores(weights)
+    if score_df.empty:
+        st.warning("目前無法讀取分群或商品資料，請確認 data/ 資料夾是否包含 KMeans_Final_Result.xlsx 與模型輸出檔。")
+        return
+
+    best = score_df.iloc[0]
+    second = score_df.iloc[1] if len(score_df) > 1 else None
+    third = score_df.iloc[2] if len(score_df) > 2 else None
+
+    st.subheader("2｜目前權重下的目標市場建議")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("第一優先", str(best["目標市場"]), f"決策分數 {best['決策分數']}/100")
+    if second is not None:
+        k2.metric("第二優先", str(second["目標市場"]), f"決策分數 {second['決策分數']}/100")
+    if third is not None:
+        k3.metric("第三優先", str(third["目標市場"]), f"決策分數 {third['決策分數']}/100")
+
+    st.markdown(
+        f"""
+        <div class="vv-action">
+        <b>目前建議：</b>在「{preset}」情境下，系統建議優先鎖定 <b>{best['目標市場']}</b>。<br>
+        主要原因是此客群在目前權重設定下，於市場規模、商品對應、購買表現或推廣可行性等指標的綜合分數最高。這不是固定結論；如果策略改為品牌建立、清庫存或差異化內容，排序可能改變。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("3｜數據證據表：為什麼是這個客群？")
+    display_cols = ["排名", "目標市場", "行銷名稱", "決策分數", "產品原型數", "占比", "對應商品數", "平均購買率", "市場規模", "購買表現", "商品匹配度", "評論痛點明確度", "推廣可執行性", "效益潛力"]
+    st.dataframe(score_df[display_cols], width="stretch", hide_index=True)
+    data_source("KMeans_Final_Result.xlsx + ridge_logit_customer_specific_report_*.xlsx + reviews_processed_classified.csv", "分群、商品表現與評論痛點共同計算；本頁權重可由使用者調整")
+
+    fig = px.bar(
+        score_df.sort_values("決策分數", ascending=True),
+        x="決策分數",
+        y="目標市場",
+        orientation="h",
+        color="目標市場",
+        title="目標市場優先排序｜依目前權重計算",
+        text="決策分數",
+    )
+    fig.update_layout(height=420, showlegend=False)
+    st.plotly_chart(fig, width="stretch")
+
+    with st.expander("評分公式與權重說明", expanded=False):
+        st.markdown(
+            """
+            **目標市場優先分數 =**  
+            市場規模 × 權重 + 購買表現 × 權重 + 商品匹配度 × 權重 + 評論痛點明確度 × 權重 + 推廣可執行性 × 權重 + 效益潛力 × 權重
+
+            - **市場規模：**來自分群結果中的產品偏好原型數與占比。
+            - **購買表現：**對應商品組合的平均購買率。
+            - **商品匹配度：**技詮現有商品是否容易服務該客群。
+            - **評論痛點明確度：**評論中是否能明確找到規格、功能、外觀、價格等可操作痛點。
+            - **推廣可執行性：**是否能轉成 Amazon Listing、EDM、再行銷廣告或素材腳本。
+            - **效益潛力：**以購買率與售價作為初步推廣潛力 proxy；若未來有真實成本，可升級為毛利或 ROI。
+            """
+        )
+        weight_df = pd.DataFrame({"指標": list(weights.keys()), "目前權重": [f"{v*100:.1f}%" for v in weights.values()]})
+        st.dataframe(weight_df, width="stretch", hide_index=True)
+
+    st.subheader("4｜落地行銷建議")
+    action_cols = ["目標市場", "建議訊息", "落地做法"]
+    st.dataframe(score_df[action_cols], width="stretch", hide_index=True)
+
+    st.subheader("5｜下載本次決策紀錄")
+    record_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record_df = score_df.copy()
+    record_df.insert(0, "決策時間", record_time)
+    record_df.insert(1, "策略情境", preset)
+    for metric, value in weights.items():
+        record_df[f"權重_{metric}"] = round(value, 4)
+
+    csv_data = record_df.to_csv(index=False, encoding="utf-8-sig")
+    json_data = json.dumps(
+        {
+            "decision_time": record_time,
+            "strategy_preset": preset,
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "ranking": score_df[["排名", "目標市場", "決策分數"]].to_dict(orient="records"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    d1, d2 = st.columns(2)
+    d1.download_button(
+        "下載 CSV 決策紀錄",
+        data=csv_data,
+        file_name=decision_filename("target_market_decision_record.csv"),
+        mime="text/csv",
+    )
+    d2.download_button(
+        "下載 JSON 權重設定",
+        data=json_data,
+        file_name=decision_filename("target_market_weight_setting.json"),
+        mime="application/json",
+    )
+    st.caption("檔名會自動使用 YYYYMMDD_HHMMSS 開頭，方便與 Excel 版本一樣留存、回溯與比較。")
 
 
 def positioning_page():
@@ -999,16 +1259,56 @@ pages = {
     "評論洞察｜痛點與 Listing 改善": review_insights_page,
 }
 
+NAV_META = {
+    "首頁｜總覽與操作手冊": {"label": "00｜Overview\n首頁｜總覽與操作手冊", "desc": "快速掌握今天應該看什麼、怎麼用這套儀表板。"},
+    "市場區隔｜顧客偏好族群": {"label": "01｜Segmentation\n市場區隔｜顧客偏好族群", "desc": "把產品偏好與顧客需求轉成可理解的市場區隔。"},
+    "目標市場｜技詮優先客群": {"label": "02｜Targeting\n目標市場｜技詮優先客群", "desc": "用可調整權重決定技詮目前最該鎖定哪一個目標市場。"},
+    "產品定位｜技詮如何被記住": {"label": "03｜Positioning\n產品定位｜技詮如何被記住", "desc": "定義技詮在目標市場中應該被記住的價值。"},
+    "商品策略｜主推與檢討清單": {"label": "04｜Product Strategy\n商品策略｜主推與檢討清單", "desc": "判斷哪些商品要主推、測試、觀察或檢討。"},
+    "產品推廣｜廣告與效益試算": {"label": "05｜Promotion Simulator\n產品推廣｜廣告與效益試算", "desc": "用曝光、毛利率與廣告成本模擬推廣效益。"},
+    "顧客推薦｜準個人化行銷與 AI 素材": {"label": "06｜Personalized Marketing\n顧客推薦｜AI素材與優惠分配", "desc": "把顧客推薦轉成素材路線、話術、優惠與 AI 產出提示。"},
+    "顧客名單｜RFM/CAI 策略": {"label": "07｜Customer List Strategy\n顧客名單｜RFM/CAI 策略", "desc": "將顧客名單轉成不同經營策略。"},
+    "評論洞察｜痛點與 Listing 改善": {"label": "08｜Review Insights\n評論洞察｜痛點與 Listing 改善", "desc": "把評論痛點轉成 Amazon Listing 與客服改善方向。"},
+}
+
 with st.sidebar:
     st.title("VivaVictors")
     st.caption("Marketing Dashboard")
-    selected_page = st.radio("選擇功能", list(pages.keys()))
+    selected_page = st.radio(
+        "選擇功能",
+        list(pages.keys()),
+        format_func=lambda key: NAV_META.get(key, {}).get("label", key),
+    )
+    st.caption(NAV_META.get(selected_page, {}).get("desc", ""))
     st.divider()
-    st.markdown("**日常使用重點**")
-    st.caption("先決定目標客群，再決定主推商品與廣告素材。")
+    st.markdown("**日常使用流程**")
+    st.caption("先確認市場與目標客群，再決定定位、商品、推廣與個人化素材。")
+
+    with st.expander("資料來源 Data Sources", expanded=False):
+        st.markdown("""
+        - `KMeans_Final_Result.xlsx`：市場區隔與目標市場排序依據。
+        - `ridge_logit_customer_specific_report_*.xlsx`：商品購買率、推薦模型與 Top 5 推薦。
+        - `正交設計_產品組合.xlsx`：產品組合、品牌、價格、顏色、規格與 GPS 對照。
+        - `RFM_CAI 統整.xlsx`：顧客價值標籤與名單策略。
+        - `reviews_processed_classified.csv`：評論動機、情緒與痛點分類。
+        - `reviews_summary_processed.csv`：ASIN 層級評論摘要。
+        """)
+
+    with st.expander("常用名詞 Glossary", expanded=False):
+        st.markdown("""
+        - **NPT / SAE/NPT：**螺紋或安裝規格，影響買家是否能買對、裝上。
+        - **購買率：**某產品組合在資料中被購買的比例，可作為主推參考。
+        - **立即主推：**表現較好，適合優先放大曝光或投放廣告。
+        - **優先測試：**有潛力，但建議先用 A/B Test 驗證素材與受眾。
+        - **維持觀察：**表現普通，暫時維持但不急著加預算。
+        - **需要檢討：**表現偏低，應檢查價格、圖片、規格說明或評論痛點。
+        - **準個人化行銷：**不是每人一支廣告，而是依客群、推薦商品與偏好分配素材與優惠。
+        """)
+
     st.divider()
     if st.button("清除快取後重新整理"):
         st.cache_data.clear()
         st.rerun()
+
 
 pages[selected_page]()
