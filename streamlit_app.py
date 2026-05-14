@@ -84,6 +84,26 @@ TERM_EXPLAIN = {
     "分群": "分群是把相似偏好的產品組合或顧客放在一起。儀表板前台不使用統計術語，會直接呈現為『市場區隔』與『客群輪廓』。",
 }
 
+
+SOURCE_ITEMS = [
+    ("KMeans_Final_Result.xlsx", "市場區隔與目標市場排序", "用 28 種產品偏好原型判斷三種可行銷客群。"),
+    ("ridge_logit_customer_specific_report_*.xlsx", "購買率與推薦模型", "提供 Product_Summary 與每位顧客 Top 5 推薦。"),
+    ("正交設計_產品組合.xlsx", "產品屬性對照", "對應品牌、價格、顏色、規格、GPS 與 ASIN。"),
+    ("RFM_CAI 統整.xlsx", "顧客名單策略", "用於顧客價值標籤、CAI 分群與名單經營。"),
+    ("reviews_processed_classified.csv", "評論痛點與動機", "用評論內容判讀功能、規格、品質、外觀與價格需求。"),
+    ("reviews_summary_processed.csv", "ASIN 評論摘要", "彙整各商品評論數、平均星等與正負評。"),
+]
+
+GLOSSARY_ITEMS = [
+    ("NPT / SAE-NPT", "螺紋或安裝規格。對行銷人員來說，重點是買家要能快速確認是否買對、能否安裝。"),
+    ("購買率", "某產品組合在資料中被購買的比例，可作為主推優先順序參考。"),
+    ("立即主推", "表現較好，適合優先放大曝光、投放廣告或放入 EDM 主推。"),
+    ("優先測試", "有潛力但不宜一次加大預算，建議先做 A/B Test。"),
+    ("維持觀察", "表現普通，維持基本曝光與自然流量，不急著加預算。"),
+    ("需要檢討", "先檢查價格、圖片、規格說明、評論痛點或是否暫緩推廣。"),
+    ("準個人化行銷", "不是每人一支廣告，而是依客群、推薦商品與偏好分配素材、話術與優惠。"),
+]
+
 st.set_page_config(page_title="PEP with VivaVictors", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 CUSTOM_CSS = """
@@ -96,6 +116,28 @@ CUSTOM_CSS = """
 .vv-warning {padding: .85rem 1rem; border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, .12); border-radius: .6rem; margin: .8rem 0;}
 .vv-source {font-size:.82rem; opacity:.68; margin-top:-.2rem; margin-bottom: .8rem;}
 .small-text {font-size: .92rem; opacity: .86;}
+
+[data-testid="stSidebar"] .stRadio label {
+    white-space: pre-line !important;
+    align-items: flex-start !important;
+    padding: .55rem .65rem !important;
+    border-radius: .85rem !important;
+    margin: .08rem 0 !important;
+    border: 1px solid rgba(148, 163, 184, .18);
+}
+[data-testid="stSidebar"] .stRadio label p {
+    white-space: pre-line !important;
+    line-height: 1.28 !important;
+    font-size: .88rem !important;
+}
+[data-testid="stSidebar"] .stRadio label:hover {
+    background: rgba(148, 163, 184, .10) !important;
+}
+.vv-side-block {padding:.65rem .7rem; border:1px solid rgba(148,163,184,.25); border-radius:.8rem; margin:.45rem 0; background:rgba(148,163,184,.06); overflow-wrap:anywhere; word-break:break-word;}
+.vv-side-title {font-weight:700; font-size:.86rem; line-height:1.25; display:block; margin-bottom:.18rem;}
+.vv-side-body {font-size:.78rem; line-height:1.35; opacity:.86; display:block;}
+.vv-tag {font-size:.68rem; padding:.1rem .35rem; border-radius:999px; background:rgba(37,99,235,.12); color:#1d4ed8; margin-right:.25rem;}
+
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -583,7 +625,6 @@ def overview_page():
         st.plotly_chart(fig, width="stretch")
         data_source("ridge_logit_customer_specific_report_*.xlsx", "Product_Summary 工作表；商品屬性補充自 正交設計_產品組合.xlsx")
 
-    term_box()
     if source_name:
         st.caption(f"目前市場區隔資料來源：data/{source_name}。若更換分群結果，請替換此檔案並重啟 Streamlit。")
 
@@ -798,8 +839,6 @@ def target_market_page():
     st.markdown(
         "本頁不是直接給固定答案，而是把市場區隔、商品表現、評論痛點與推廣可行性轉成可調整的目標市場排序。行銷人員可以依不同策略情境調整權重，保留本次判斷紀錄，未來再比較成效。"
     )
-    term_box()
-
     st.subheader("1｜選擇策略情境與決策權重")
     col_preset, col_note = st.columns([1, 2])
     with col_preset:
@@ -926,33 +965,214 @@ def target_market_page():
     st.caption("檔名會自動使用 YYYYMMDD_HHMMSS 開頭，方便與 Excel 版本一樣留存、回溯與比較。")
 
 
+
+def segment_name_to_id(name: str) -> int:
+    for sid, cfg in SEGMENT_CONFIG.items():
+        if cfg.get("name") == name:
+            return sid
+    return 2
+
+
+def default_target_segment_id() -> int:
+    try:
+        scores = build_target_market_scores(preset_weights("短期衝銷售"))
+        if not scores.empty:
+            return segment_name_to_id(str(scores.iloc[0]["目標市場"]))
+    except Exception:
+        pass
+    return 2
+
+
+def segment_options_with_default(label: str = "套用目標市場"):
+    options = [SEGMENT_CONFIG[sid]["name"] for sid in sorted(SEGMENT_CONFIG)]
+    default_sid = st.session_state.get("current_target_segment_id", default_target_segment_id())
+    default_name = SEGMENT_CONFIG.get(default_sid, SEGMENT_CONFIG[2])["name"]
+    index = options.index(default_name) if default_name in options else 1
+    selected_name = st.selectbox(
+        label,
+        options,
+        index=index,
+        help="這裡可手動切換目標市場，用來檢視不同客群下的定位與商品策略；若已在目標市場頁調整權重，系統會優先帶入目前第一優先客群。",
+    )
+    sid = segment_name_to_id(selected_name)
+    st.session_state["current_target_segment_id"] = sid
+    return sid, SEGMENT_CONFIG[sid]
+
+
+def positioning_profile(segment_id: int) -> dict:
+    profiles = {
+        1: {
+            "pain": "怕買錯 NPT / SAE 規格、怕安裝不合、重視性能與儀表穩定度。",
+            "value": "用清楚規格、安裝確認與性能語境，讓專業買家快速判斷是否符合需求。",
+            "positioning": "面向改裝與專業使用者的精準規格與性能感儀表選購品牌。",
+            "claim": "精準規格、穩定性能，讓改裝與維修更有把握。",
+            "listing_focus": "NPT / SAE 規格對照、安裝情境、性能與耐用性說明。",
+            "ad_angle": "規格買對、性能穩定、Racing 風格。",
+        },
+        2: {
+            "pain": "希望商品可靠、價格合理、功能實用，並降低跨境購買風險。",
+            "value": "用主流款式、價格透明、GPS / 功能說明與評論佐證提升購買信心。",
+            "positioning": "規格清楚、功能可靠、價格透明的高 CP 值汽車儀表選購夥伴。",
+            "claim": "清楚規格、可靠功能，在合理價格中找到安心選擇。",
+            "listing_focus": "主流黑白款、GPS 功能、價格與評論摘要、常見問題。",
+            "ad_angle": "好理解、好比較、好下單的主流可靠選擇。",
+        },
+        3: {
+            "pain": "除了規格與功能，也在意儀表是否能搭配車內色調與個人風格。",
+            "value": "用特殊色系、情境實裝圖與風格比較，讓買家看到安裝後效果。",
+            "positioning": "能搭配車內風格與個人品味的汽車儀表視覺方案。",
+            "claim": "不只買得到能用的儀表，也能找到符合內裝風格的選擇。",
+            "listing_focus": "米色、藍色等特殊色實裝圖、內裝搭配與顏色比較。",
+            "ad_angle": "內裝搭配、色系質感、個性化風格。",
+        },
+    }
+    return profiles.get(segment_id, profiles[2])
+
+
+def product_positioning_fit(row, segment_id: int) -> float:
+    brand = str(row.get("Brand", "")).lower()
+    spec = str(row.get("Spec_Display", row.get("Spec", ""))).lower()
+    color = str(row.get("Color", "")).lower()
+    gps = str(row.get("GPS_Display", row.get("GPS", ""))).lower()
+    price = float(row.get("Price", 0) or 0)
+    score = 35
+    if segment_id == 1:
+        if "motor" in brand: score += 28
+        if "npt" in spec: score += 25
+        if "racing" in brand: score += 8
+        if color in ["橘色", "黑色", "orange", "black"]: score += 4
+    elif segment_id == 2:
+        if any(b in brand for b in ["dolphin", "faria", "speedway"]): score += 18
+        if "gps" in gps and "無" not in gps: score += 18
+        if color in ["黑色", "白色", "黃色", "black", "white", "yellow"]: score += 16
+        if price > 0: score += 10
+        if "sae" in spec or "npt" in spec: score += 8
+    elif segment_id == 3:
+        if color in ["米色", "藍色", "beige", "blue"]: score += 42
+        if color not in ["未標示", "黑色", "白色", "black", "white"]: score += 14
+        if price > 0: score += 6
+    return max(0, min(100, score))
+
+
+def product_role(row, segment_id: int, rate_max: float) -> str:
+    rate = float(row.get("Actual_Purchase_Rate", 0) or 0)
+    fit = float(row.get("定位符合度", 0) or 0)
+    color = str(row.get("Color", ""))
+    price = float(row.get("Price", 0) or 0)
+    rate_norm = 100 * rate / rate_max if rate_max else rate
+    if rate < 2 or fit < 45:
+        return "檢討改善商品"
+    if rate_norm >= 75 and fit >= 70:
+        return "主力轉換商品"
+    if fit >= 85:
+        return "定位證明商品"
+    if segment_id == 3 or color in ["米色", "藍色", "beige", "blue"]:
+        return "差異化商品"
+    if segment_id == 2 or price > 0:
+        return "流量導入商品"
+    return "優先測試商品"
+
+
+def product_role_action(role: str) -> str:
+    mapping = {
+        "主力轉換商品": "加大曝光，放入主推廣告、首頁推薦與 EDM 主商品。",
+        "定位證明商品": "用於品牌定位、Amazon A+ Content、規格圖與案例素材。",
+        "流量導入商品": "作為促銷入口或再行銷入口，用價格、主流款式或高 CP 值吸引點擊。",
+        "差異化商品": "做情境圖、社群素材、顏色比較與風格內容。",
+        "檢討改善商品": "暫緩加大預算，先檢查價格、圖片、規格說明與評論痛點。",
+        "優先測試商品": "先用小額預算測素材、受眾與折扣，不直接大規模投放。",
+    }
+    return mapping.get(role, "依商品表現與定位符合度安排測試。")
+
+
+def role_message(role: str, profile: dict) -> str:
+    if role == "主力轉換商品":
+        return profile["claim"]
+    if role == "定位證明商品":
+        return f"用來證明品牌定位：{profile['positioning']}"
+    if role == "流量導入商品":
+        return "以主流款式、價格透明與低風險選購作為點擊入口。"
+    if role == "差異化商品":
+        return "以視覺風格、色系搭配與情境圖建立差異化印象。"
+    if role == "檢討改善商品":
+        return "先補強圖片、規格表、FAQ 或價格說明，再決定是否投放。"
+    return "小額測試不同素材與受眾，觀察點擊率與轉換率。"
+
+
+def add_product_strategy_columns(df: pd.DataFrame, segment_id: int) -> pd.DataFrame:
+    out = df.copy()
+    rate_max = float(out["Actual_Purchase_Rate"].max() or 1)
+    out["定位符合度"] = out.apply(lambda r: product_positioning_fit(r, segment_id), axis=1)
+    out["購買表現分數"] = (out["Actual_Purchase_Rate"] / rate_max * 100).clip(0, 100)
+    feasibility_map = {"立即主推": 95, "優先測試": 75, "維持觀察": 55, "需要檢討": 35, "資料不足": 30}
+    out["推廣可執行性"] = out["Strategy_Tag"].map(feasibility_map).fillna(55)
+    out["評論風險反向分數"] = 80
+    out["商品策略分數"] = (
+        out["購買表現分數"] * 0.40
+        + out["定位符合度"] * 0.35
+        + out["推廣可執行性"] * 0.15
+        + out["評論風險反向分數"] * 0.10
+    ).round(1)
+    out["商品角色"] = out.apply(lambda r: product_role(r, segment_id, rate_max), axis=1)
+    profile = positioning_profile(segment_id)
+    out["建議行動"] = out["商品角色"].apply(product_role_action)
+    out["推廣話術"] = out["商品角色"].apply(lambda role: role_message(role, profile))
+    return out
+
+
 def positioning_page():
     st.header("產品定位｜技詮如何被記住")
-    st.markdown("產品定位不是描述商品有哪些屬性，而是讓目標買家知道：為什麼我要買技詮，而不是買其他 Amazon 賣家的相似商品？")
-    st.markdown("""
-    <div class="vv-action"><b>建議定位句：</b><br>
-    技詮應定位為「協助跨境買家買對規格、降低安裝風險的專業汽車儀表選購品牌」。</div>
-    """, unsafe_allow_html=True)
+    st.markdown("本頁把上一頁的目標市場轉成產品定位。重點不是列出商品功能，而是說清楚：技詮要用什麼價值打動這群買家，以及這個定位如何落實到 Amazon Listing、EDM 與廣告素材。")
 
+    seg_id, cfg = segment_options_with_default("套用目標市場")
+    profile = positioning_profile(seg_id)
+    st.markdown(
+        f"""
+        <div class="vv-action">
+        <b>目前套用目標市場：</b>{cfg['name']}｜{cfg['business_name']}<br>
+        <b>品牌總定位：</b>技詮以「規格透明、安裝安心、功能可靠」作為核心定位，並依不同目標市場調整商品頁與廣告訊息。<br>
+        <b>本客群定位：</b>{profile['positioning']}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("1｜定位推導：從目標市場到產品主張")
     positioning_df = pd.DataFrame([
-        ["目標對象", "Amazon 跨境平台上的 DIY／維修／改裝型儀表買家"],
-        ["核心痛點", "怕買錯規格、怕安裝不合、怕功能不穩、怕跨境退換貨麻煩"],
-        ["技詮價值", "用清楚規格表、安裝示意圖、評論佐證與個人化推薦降低購買風險"],
-        ["品牌印記", "專業、清楚、穩定、規格可信任，而不是單純低價"],
-        ["產品頁主張", "Fit Right, Install Easier, Drive with Confidence"],
-    ], columns=["定位元素", "建議內容"])
+        ["目標客群", cfg["name"]],
+        ["顧客核心痛點", profile["pain"]],
+        ["技詮可提供的價值", profile["value"]],
+        ["產品定位方向", profile["positioning"]],
+        ["可放入簡報的定位句", profile["claim"]],
+    ], columns=["推導項目", "內容"])
     st.dataframe(positioning_df, width="stretch", hide_index=True)
+    data_source("KMeans_Final_Result.xlsx + reviews_processed_classified.csv + 正交設計_產品組合.xlsx", "由目標市場、評論痛點與產品屬性共同推導定位")
 
-    st.subheader("如何落實在 Amazon Listing？」")
+    st.subheader("2｜定位證據：這不是一句口號")
+    evidence = pd.DataFrame([
+        ["市場區隔", "KMeans_Final_Result.xlsx", "確認目前客群是依產品偏好與購買原型切分，而不是主觀命名。"],
+        ["商品表現", "ridge_logit_customer_specific_report_*.xlsx", "檢查此定位下哪些商品具備購買率與推薦潛力。"],
+        ["產品屬性", "正交設計_產品組合.xlsx", "把品牌、價格、顏色、規格與 GPS 對應到定位主張。"],
+        ["評論痛點", "reviews_processed_classified.csv", "確認顧客在規格、功能、品質、外觀或價格上的可操作痛點。"],
+    ], columns=["證據類型", "資料來源", "如何支持定位"])
+    st.dataframe(evidence, width="stretch", hide_index=True)
+
+    st.subheader("3｜定位如何轉成 Amazon 與廣告素材")
     landing = pd.DataFrame([
-        ["主圖", "標出儀表外觀、顏色、NPT / SAE 規格提示，不只放產品本體"],
-        ["第二張圖", "加入規格尺寸圖與安裝前確認清單"],
-        ["第三張圖", "放車內實裝情境，尤其黑色、米色等內裝搭配"],
-        ["五點描述", "第一點先解決規格與相容性，第二點再講功能，第三點講品質"],
-        ["FAQ", "回答是否相容、如何確認規格、GPS 功能如何使用、安裝需要注意什麼"],
-        ["A+ Content", "用『買錯規格很麻煩 → 技詮幫你確認』作為故事線"],
-    ], columns=["Listing 區塊", "具體做法"])
+        ["Amazon 標題", profile["listing_focus"], "標題不要只塞關鍵字，要讓買家一眼知道這款解決什麼問題。"],
+        ["五點描述", profile["claim"], "第一點先解決購買疑慮，第二點再講功能，第三點講品質或風格。"],
+        ["主圖 / A+ Content", profile["landing"], "用圖像降低理解成本，讓非技術買家也能判斷是否適合。"],
+        ["EDM / 再行銷", profile["ad_angle"], "依客群痛點改寫訊息，不用所有人收到同一種文案。"],
+        ["短影音腳本", "3 秒痛點 → 5 秒解法 → 3 秒 CTA", "可銜接一對一行銷頁的 AI 素材提示。"],
+    ], columns=["使用場景", "定位轉譯", "具體做法"])
     st.dataframe(landing, width="stretch", hide_index=True)
+
+    st.markdown(
+        """
+        <div class="vv-note"><b>行銷判讀：</b>產品定位不是固定不變的 slogan。當目標市場切換時，商品頁主張、廣告素材與 EDM 話術也應跟著改變；這樣才會讓 STP 從簡報概念變成行銷執行流程。</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def product_strategy_page():
@@ -962,36 +1182,73 @@ def product_strategy_page():
         st.info("目前找不到產品分析資料。")
         return
 
-    st.markdown("本頁是日常商品管理工具：行銷人員可用它判斷今天要推哪個商品、哪些商品先小額測試、哪些商品需要檢查頁面或暫緩投放。")
-    with st.expander("行銷判斷標籤怎麼看？", expanded=True):
-        st.markdown("""
-        - **立即主推**：購買率高，適合放到廣告、EDM、首頁或商品頁推薦區。
-        - **優先測試**：有潛力，但需要用小額預算測試素材、受眾或折扣方案。
-        - **維持觀察**：維持自然流量與基本曝光，不建議大量增加預算。
-        - **需要檢討**：先檢查圖片、規格說明、價格、評論痛點或是否暫緩推廣。
-        """)
+    seg_id, cfg = segment_options_with_default("套用產品定位")
+    profile = positioning_profile(seg_id)
+    products = add_product_strategy_columns(products, seg_id)
 
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown(
+        f"""
+        <div class="vv-action">
+        <b>目前套用定位：</b>{profile['positioning']}<br>
+        <b>對應目標客群：</b>{cfg['name']}<br>
+        商品策略不只看購買率，而是同時評估「購買表現、定位符合度、推廣可執行性與評論風險」。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("商品角色怎麼看？", expanded=True):
+        role_df = pd.DataFrame([
+            ["主力轉換商品", "購買率高且符合目前定位", "加大曝光，放入主推廣告、首頁推薦與 EDM 主商品。"],
+            ["定位證明商品", "最能代表技詮的定位價值", "用於品牌定位、Amazon A+ Content、規格圖與案例素材。"],
+            ["流量導入商品", "容易吸引點擊或促銷進站", "作為促銷入口或再行銷入口。"],
+            ["差異化商品", "特殊色系、特殊規格或風格明顯", "做情境圖、社群素材與顏色比較。"],
+            ["檢討改善商品", "購買率偏低或與定位不符", "先檢查圖片、規格、價格、FAQ 與評論痛點。"],
+        ], columns=["商品角色", "判斷邏輯", "建議行動"])
+        st.dataframe(role_df, width="stretch", hide_index=True)
+        st.caption("商品策略分數 = 購買表現 40% + 定位符合度 35% + 推廣可執行性 15% + 評論風險反向分數 10%。")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     brand = col1.selectbox("品牌", ["全部"] + sorted(products["Brand"].dropna().unique().tolist()))
     color = col2.selectbox("顏色", ["全部"] + sorted(products["Color"].dropna().unique().tolist()))
     spec = col3.selectbox("規格", ["全部"] + sorted(products["Spec_Display"].dropna().unique().tolist()))
     gps = col4.selectbox("GPS", ["全部"] + sorted(products["GPS_Display"].dropna().unique().tolist()))
+    role_filter = col5.selectbox("商品角色", ["全部"] + sorted(products["商品角色"].dropna().unique().tolist()))
 
     df = products.copy()
     if brand != "全部": df = df[df["Brand"] == brand]
     if color != "全部": df = df[df["Color"] == color]
     if spec != "全部": df = df[df["Spec_Display"] == spec]
     if gps != "全部": df = df[df["GPS_Display"] == gps]
+    if role_filter != "全部": df = df[df["商品角色"] == role_filter]
 
-    view = df.sort_values("Actual_Purchase_Rate", ascending=False)[["Product_Row", "Product_Label", "Strategy_Tag", "Strategy_Action", "Actual_Purchase_Rate", "Mean_Predicted_Probability", "Actual_Purchase_Count", "ASIN"]].copy()
+    st.subheader("1｜商品角色與推廣清單")
+    view = df.sort_values("商品策略分數", ascending=False)[[
+        "Product_Row", "Product_Label", "商品角色", "商品策略分數", "定位符合度", "Actual_Purchase_Rate", "Mean_Predicted_Probability", "建議行動", "推廣話術", "ASIN"
+    ]].copy()
     view["Actual_Purchase_Rate"] = view["Actual_Purchase_Rate"].map(lambda x: f"{x:.2f}%")
     view["Mean_Predicted_Probability"] = view["Mean_Predicted_Probability"].map(lambda x: f"{x:.2f}%")
     st.dataframe(view, width="stretch", hide_index=True)
-    data_source("ridge_logit_customer_specific_report_*.xlsx", "Product_Summary 工作表；商品屬性補充自 正交設計_產品組合.xlsx")
+    data_source("ridge_logit_customer_specific_report_*.xlsx + 正交設計_產品組合.xlsx", "商品購買表現、產品屬性與目前定位共同計算商品角色")
 
-    fig = px.scatter(df, x="Mean_Predicted_Probability", y="Actual_Purchase_Rate", size="Actual_Purchase_Count", color="Strategy_Tag", hover_name="Product_Label", labels={"Mean_Predicted_Probability": "平均預測購買機率(%)", "Actual_Purchase_Rate": "實際購買率(%)"}, title="商品推廣優先順序矩陣")
+    st.subheader("2｜商品策略矩陣")
+    fig = px.scatter(
+        df,
+        x="定位符合度",
+        y="Actual_Purchase_Rate",
+        size="Actual_Purchase_Count",
+        color="商品角色",
+        hover_name="Product_Label",
+        labels={"定位符合度": "定位符合度", "Actual_Purchase_Rate": "實際購買率(%)"},
+        title="商品角色矩陣｜定位符合度 × 實際購買率",
+    )
     st.plotly_chart(fig, width="stretch")
-    term_box()
+    st.markdown(
+        """
+        <div class="vv-note"><b>判讀方式：</b>右上角商品同時具備高購買率與高定位符合度，適合優先推廣；左上角商品雖賣得動但定位弱，可作流量入口；右下角商品能代表定位但轉換不足，適合作為內容或品牌素材；左下角商品應優先檢討 Listing 或暫緩投放。</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def product_promotion_page():
@@ -1260,50 +1517,44 @@ pages = {
 }
 
 NAV_META = {
-    "首頁｜總覽與操作手冊": {"label": "00｜Overview\n首頁｜總覽與操作手冊", "desc": "快速掌握今天應該看什麼、怎麼用這套儀表板。"},
-    "市場區隔｜顧客偏好族群": {"label": "01｜Segmentation\n市場區隔｜顧客偏好族群", "desc": "把產品偏好與顧客需求轉成可理解的市場區隔。"},
-    "目標市場｜技詮優先客群": {"label": "02｜Targeting\n目標市場｜技詮優先客群", "desc": "用可調整權重決定技詮目前最該鎖定哪一個目標市場。"},
-    "產品定位｜技詮如何被記住": {"label": "03｜Positioning\n產品定位｜技詮如何被記住", "desc": "定義技詮在目標市場中應該被記住的價值。"},
-    "商品策略｜主推與檢討清單": {"label": "04｜Product Strategy\n商品策略｜主推與檢討清單", "desc": "判斷哪些商品要主推、測試、觀察或檢討。"},
-    "產品推廣｜廣告與效益試算": {"label": "05｜Promotion Simulator\n產品推廣｜廣告與效益試算", "desc": "用曝光、毛利率與廣告成本模擬推廣效益。"},
-    "顧客推薦｜準個人化行銷與 AI 素材": {"label": "06｜Personalized Marketing\n顧客推薦｜AI素材與優惠分配", "desc": "把顧客推薦轉成素材路線、話術、優惠與 AI 產出提示。"},
-    "顧客名單｜RFM/CAI 策略": {"label": "07｜Customer List Strategy\n顧客名單｜RFM/CAI 策略", "desc": "將顧客名單轉成不同經營策略。"},
-    "評論洞察｜痛點與 Listing 改善": {"label": "08｜Review Insights\n評論洞察｜痛點與 Listing 改善", "desc": "把評論痛點轉成 Amazon Listing 與客服改善方向。"},
+    "首頁｜總覽與操作手冊": {"label": "00  Overview\n首頁｜總覽與操作手冊", "desc": "快速掌握今天應該看什麼、怎麼用這套儀表板。"},
+    "市場區隔｜顧客偏好族群": {"label": "01  Segmentation\n市場區隔｜顧客偏好族群", "desc": "把產品偏好與顧客需求轉成可理解的市場區隔。"},
+    "目標市場｜技詮優先客群": {"label": "02  Targeting\n目標市場｜技詮優先客群", "desc": "用可調整權重決定技詮目前最該鎖定哪一個目標市場。"},
+    "產品定位｜技詮如何被記住": {"label": "03  Positioning\n產品定位｜技詮如何被記住", "desc": "把目標市場轉成產品頁、廣告與品牌主張。"},
+    "商品策略｜主推與檢討清單": {"label": "04  Product Strategy\n商品策略｜主推與檢討清單", "desc": "依目前定位判斷商品角色、推廣優先順序與檢討方向。"},
+    "產品推廣｜廣告與效益試算": {"label": "05  Promotion Simulator\n產品推廣｜廣告與效益試算", "desc": "用曝光、毛利率與廣告成本模擬推廣效益。"},
+    "顧客推薦｜準個人化行銷與 AI 素材": {"label": "06  Personalized Marketing\n顧客推薦｜AI素材與優惠分配", "desc": "把顧客推薦轉成素材路線、話術、優惠與 AI 產出提示。"},
+    "顧客名單｜RFM/CAI 策略": {"label": "07  Customer List Strategy\n顧客名單｜RFM/CAI 策略", "desc": "將顧客名單轉成不同經營策略。"},
+    "評論洞察｜痛點與 Listing 改善": {"label": "08  Review Insights\n評論洞察｜痛點與 Listing 改善", "desc": "把評論痛點轉成 Amazon Listing 與客服改善方向。"},
 }
 
 with st.sidebar:
     st.title("VivaVictors")
     st.caption("Marketing Dashboard")
+    st.markdown("<div class='small-text'>功能目錄</div>", unsafe_allow_html=True)
     selected_page = st.radio(
         "選擇功能",
         list(pages.keys()),
+        label_visibility="collapsed",
         format_func=lambda key: NAV_META.get(key, {}).get("label", key),
     )
     st.caption(NAV_META.get(selected_page, {}).get("desc", ""))
     st.divider()
-    st.markdown("**日常使用流程**")
-    st.caption("先確認市場與目標客群，再決定定位、商品、推廣與個人化素材。")
+    st.markdown("<div class='vv-side-block'><span class='vv-side-title'>日常使用流程</span><span class='vv-side-body'>先確認市場與目標客群，再決定定位、商品、推廣與個人化素材。</span></div>", unsafe_allow_html=True)
 
     with st.expander("資料來源 Data Sources", expanded=False):
-        st.markdown("""
-        - `KMeans_Final_Result.xlsx`：市場區隔與目標市場排序依據。
-        - `ridge_logit_customer_specific_report_*.xlsx`：商品購買率、推薦模型與 Top 5 推薦。
-        - `正交設計_產品組合.xlsx`：產品組合、品牌、價格、顏色、規格與 GPS 對照。
-        - `RFM_CAI 統整.xlsx`：顧客價值標籤與名單策略。
-        - `reviews_processed_classified.csv`：評論動機、情緒與痛點分類。
-        - `reviews_summary_processed.csv`：ASIN 層級評論摘要。
-        """)
+        for fname, purpose, detail in SOURCE_ITEMS:
+            st.markdown(
+                f"<div class='vv-side-block'><span class='vv-tag'>Data</span><span class='vv-side-title'>{fname}</span><span class='vv-side-body'>{purpose}<br>{detail}</span></div>",
+                unsafe_allow_html=True,
+            )
 
     with st.expander("常用名詞 Glossary", expanded=False):
-        st.markdown("""
-        - **NPT / SAE/NPT：**螺紋或安裝規格，影響買家是否能買對、裝上。
-        - **購買率：**某產品組合在資料中被購買的比例，可作為主推參考。
-        - **立即主推：**表現較好，適合優先放大曝光或投放廣告。
-        - **優先測試：**有潛力，但建議先用 A/B Test 驗證素材與受眾。
-        - **維持觀察：**表現普通，暫時維持但不急著加預算。
-        - **需要檢討：**表現偏低，應檢查價格、圖片、規格說明或評論痛點。
-        - **準個人化行銷：**不是每人一支廣告，而是依客群、推薦商品與偏好分配素材與優惠。
-        """)
+        for term, explanation in GLOSSARY_ITEMS:
+            st.markdown(
+                f"<div class='vv-side-block'><span class='vv-tag'>Term</span><span class='vv-side-title'>{term}</span><span class='vv-side-body'>{explanation}</span></div>",
+                unsafe_allow_html=True,
+            )
 
     st.divider()
     if st.button("清除快取後重新整理"):
