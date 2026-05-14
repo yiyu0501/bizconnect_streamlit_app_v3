@@ -1029,6 +1029,108 @@ def positioning_profile(segment_id: int) -> dict:
     return profiles.get(segment_id, profiles[2])
 
 
+def segment_attribute_evidence(segment_id: int) -> pd.DataFrame:
+    """Return top quantitative cluster attributes for positioning evidence."""
+    _, summary, source_name = load_market_segments()
+    if summary.empty or "Cluster" not in summary.columns:
+        return pd.DataFrame(columns=["排序", "偏好指標", "中心值", "行銷解讀"])
+    row_df = summary[summary["Cluster"].astype(int) == int(segment_id)]
+    if row_df.empty:
+        return pd.DataFrame(columns=["排序", "偏好指標", "中心值", "行銷解讀"])
+    row = row_df.iloc[0]
+    exclude = {"Cluster", "Customer_Count", "Share", "Segment_Name", "Business_Name", "Subtitle", "Priority"}
+    metric_cols = [c for c in summary.columns if c not in exclude]
+    values = pd.to_numeric(row[metric_cols], errors="coerce").dropna().sort_values(ascending=False).head(5)
+    rows = []
+    for i, (col, val) in enumerate(values.items(), start=1):
+        label = ATTRIBUTE_LABELS.get(str(col), str(col))
+        if str(col).lower() == "price":
+            interp = "價格相關係數較高，代表此群對促銷、折扣或價格比較訊息較敏感。"
+        elif any(k in str(col).lower() for k in ["npt", "sae"]):
+            interp = "規格與安裝適配是此群的重要判斷點，商品頁需清楚呈現尺寸與規格。"
+        elif "gps" in str(col).lower():
+            interp = "功能性訊息可成為廣告與商品頁主張。"
+        elif any(k in str(col).lower() for k in ["black", "white", "beige", "blue", "orange", "green", "yellow"]):
+            interp = "顏色或外觀偏好明顯，適合用實裝圖與情境素材溝通。"
+        elif any(k in str(col).lower() for k in ["motor", "faria", "dolphin", "speedway"]):
+            interp = "品牌或產品線偏好較明顯，可作為商品策略與投放素材的依據。"
+        else:
+            interp = "此指標在該群中心值較高，可作為定位證據之一。"
+        rows.append([i, label, round(float(val), 4), interp])
+    return pd.DataFrame(rows, columns=["排序", "偏好指標", "中心值", "行銷解讀"])
+
+
+def segment_review_filter(reviews: pd.DataFrame, segment_id: int) -> pd.DataFrame:
+    if reviews.empty:
+        return reviews
+    mot = reviews.get("Motivation_Type", pd.Series("", index=reviews.index)).astype(str)
+    text = reviews.get("Review_Text", pd.Series("", index=reviews.index)).astype(str).str.lower()
+    if segment_id == 1:
+        mask = mot.isin(["規格適配", "功能可靠需求", "品質信任"]) | text.str.contains("npt|sae|fit|thread|install|accurate|racing", regex=True, na=False)
+    elif segment_id == 2:
+        mask = mot.isin(["價格敏感", "功能可靠需求", "品質信任"]) | text.str.contains("gps|price|value|quality|work|easy", regex=True, na=False)
+    else:
+        mask = mot.isin(["外觀偏好"]) | text.str.contains("beige|blue|color|look|style|design|appearance", regex=True, na=False)
+    return reviews[mask].copy()
+
+
+def positioning_evidence_summary(segment_id: int) -> dict:
+    """Build numerical evidence for the positioning page."""
+    _, seg_summary, _ = load_market_segments()
+    products = load_product_summary()
+    reviews = load_reviews_detail()
+
+    seg_row = pd.Series(dtype=object)
+    if not seg_summary.empty and "Cluster" in seg_summary.columns:
+        rows = seg_summary[seg_summary["Cluster"].astype(int) == int(segment_id)]
+        if not rows.empty:
+            seg_row = rows.iloc[0]
+
+    matched_products = _get_segment_products(products, segment_id) if not products.empty else pd.DataFrame()
+    matched_reviews = segment_review_filter(reviews, segment_id)
+
+    top_product = None
+    if not matched_products.empty:
+        top_product = matched_products.sort_values("Actual_Purchase_Rate", ascending=False).iloc[0]
+
+    review_total = len(reviews)
+    review_match = len(matched_reviews)
+    review_share = review_match / review_total * 100 if review_total else 0
+    top_motivation = "—"
+    if review_match and "Motivation_Type" in matched_reviews.columns:
+        mode = matched_reviews["Motivation_Type"].mode()
+        top_motivation = str(mode.iloc[0]) if not mode.empty else "—"
+
+    avg_purchase_rate = float(matched_products.get("Actual_Purchase_Rate", pd.Series([0])).mean()) if not matched_products.empty else 0
+    max_purchase_rate = float(matched_products.get("Actual_Purchase_Rate", pd.Series([0])).max()) if not matched_products.empty else 0
+    avg_pred = float(matched_products.get("Mean_Predicted_Probability", pd.Series([0])).mean()) if not matched_products.empty else 0
+    prototype_count = int(seg_row.get("Customer_Count", 0)) if not seg_row.empty else 0
+    prototype_share = float(seg_row.get("Share", 0)) if not seg_row.empty else 0
+
+    return {
+        "產品偏好原型數": prototype_count,
+        "原型占比": prototype_share,
+        "對應商品數": int(len(matched_products)),
+        "平均購買率": avg_purchase_rate,
+        "最高購買率": max_purchase_rate,
+        "平均預測機率": avg_pred,
+        "相關評論數": int(review_match),
+        "相關評論占比": review_share,
+        "主要評論動機": top_motivation,
+        "最高購買率商品": top_product.get("Product_Label", "—") if top_product is not None else "—",
+    }
+
+
+def positioning_evidence_table(segment_id: int) -> pd.DataFrame:
+    ev = positioning_evidence_summary(segment_id)
+    return pd.DataFrame([
+        ["市場區隔規模", "KMeans_Final_Result.xlsx / Cluster_Summary", f"{ev['產品偏好原型數']} 種產品偏好原型，占全部原型 {ev['原型占比']:.1f}%", "此數字用來判斷該客群是否值得作為主要目標市場，而不是只憑主觀命名。"],
+        ["商品表現", "ridge_logit_customer_specific_report_*.xlsx / Product_Summary", f"對應 {ev['對應商品數']} 個商品組合，平均購買率 {ev['平均購買率']:.2f}%，最高購買率 {ev['最高購買率']:.2f}%", "購買率可支撐該定位是否具備轉換基礎；若只有形象但沒有轉換，需要改為品牌素材而非主力銷售。"],
+        ["推薦潛力", "ridge_logit_customer_specific_report_*.xlsx / Recommendation_Top5 與預測機率", f"對應商品平均預測購買機率 {ev['平均預測機率']:.2f}%", "用於判斷定位是否可連接到個人化推薦與後續 EDM / 再行銷名單。"],
+        ["評論痛點", "reviews_processed_classified.csv", f"相關評論 {ev['相關評論數']} 則，占全部評論 {ev['相關評論占比']:.1f}%；主要動機：{ev['主要評論動機']}", "評論不是只拿來描述，而是用來判斷 Amazon Listing 該補強規格、功能、品質、外觀或價格資訊。"],
+    ], columns=["證據指標", "資料來源", "量化結果", "如何支持定位"])
+
+
 def product_positioning_fit(row, segment_id: int) -> float:
     brand = str(row.get("Brand", "")).lower()
     spec = str(row.get("Spec_Display", row.get("Spec", ""))).lower()
@@ -1122,22 +1224,34 @@ def add_product_strategy_columns(df: pd.DataFrame, segment_id: int) -> pd.DataFr
 
 def positioning_page():
     st.header("產品定位｜技詮如何被記住")
-    st.markdown("本頁把上一頁的目標市場轉成產品定位。重點不是列出商品功能，而是說清楚：技詮要用什麼價值打動這群買家，以及這個定位如何落實到 Amazon Listing、EDM 與廣告素材。")
+    st.markdown(
+        "本頁只處理產品定位：先選定目標市場，再用分群結果、商品購買率、推薦機率與評論痛點做證據，最後把定位轉成 Amazon Listing、EDM 與廣告素材。"
+    )
 
     seg_id, cfg = segment_options_with_default("套用目標市場")
     profile = positioning_profile(seg_id)
+    ev = positioning_evidence_summary(seg_id)
+
+    st.subheader("1｜目前定位建議")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("產品偏好原型", f"{ev['產品偏好原型數']} 種", f"占比 {ev['原型占比']:.1f}%")
+    k2.metric("對應商品組合", f"{ev['對應商品數']} 個")
+    k3.metric("平均購買率", f"{ev['平均購買率']:.2f}%")
+    k4.metric("相關評論", f"{ev['相關評論數']} 則", f"{ev['相關評論占比']:.1f}%")
+
     st.markdown(
         f"""
         <div class="vv-action">
         <b>目前套用目標市場：</b>{cfg['name']}｜{cfg['business_name']}<br>
-        <b>品牌總定位：</b>技詮以「規格透明、安裝安心、功能可靠」作為核心定位，並依不同目標市場調整商品頁與廣告訊息。<br>
-        <b>本客群定位：</b>{profile['positioning']}
+        <b>產品定位主張：</b>{profile['positioning']}<br>
+        <b>為什麼這樣定位：</b>此客群在分群資料中具備可辨識的偏好輪廓，並且可對應到 {ev['對應商品數']} 個商品組合；相關商品平均購買率為 <b>{ev['平均購買率']:.2f}%</b>，評論中也有 <b>{ev['相關評論數']}</b> 則可連結到此定位的痛點或動機。<br>
+        <b>最高購買率代表商品：</b>{ev['最高購買率商品']}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.subheader("1｜定位推導：從目標市場到產品主張")
+    st.subheader("2｜定位推導：從目標市場到產品主張")
     positioning_df = pd.DataFrame([
         ["目標客群", cfg["name"]],
         ["顧客核心痛點", profile["pain"]],
@@ -1146,22 +1260,45 @@ def positioning_page():
         ["可放入簡報的定位句", profile["claim"]],
     ], columns=["推導項目", "內容"])
     st.dataframe(positioning_df, width="stretch", hide_index=True)
-    data_source("KMeans_Final_Result.xlsx + reviews_processed_classified.csv + 正交設計_產品組合.xlsx", "由目標市場、評論痛點與產品屬性共同推導定位")
 
-    st.subheader("2｜定位證據：這不是一句口號")
-    evidence = pd.DataFrame([
-        ["市場區隔", "KMeans_Final_Result.xlsx", "確認目前客群是依產品偏好與購買原型切分，而不是主觀命名。"],
-        ["商品表現", "ridge_logit_customer_specific_report_*.xlsx", "檢查此定位下哪些商品具備購買率與推薦潛力。"],
-        ["產品屬性", "正交設計_產品組合.xlsx", "把品牌、價格、顏色、規格與 GPS 對應到定位主張。"],
-        ["評論痛點", "reviews_processed_classified.csv", "確認顧客在規格、功能、品質、外觀或價格上的可操作痛點。"],
-    ], columns=["證據類型", "資料來源", "如何支持定位"])
+    st.subheader("3｜量化證據：這不是一句口號")
+    evidence = positioning_evidence_table(seg_id)
     st.dataframe(evidence, width="stretch", hide_index=True)
+    data_source(
+        "KMeans_Final_Result.xlsx + ridge_logit_customer_specific_report_*.xlsx + reviews_processed_classified.csv",
+        "本頁以市場區隔、商品表現、推薦機率與評論痛點共同支持產品定位。",
+    )
 
-    st.subheader("3｜定位如何轉成 Amazon 與廣告素材")
+    attr_df = segment_attribute_evidence(seg_id)
+    if not attr_df.empty:
+        st.markdown("**此客群在分群中心值較高的偏好指標**")
+        st.dataframe(attr_df, width="stretch", hide_index=True)
+        fig = px.bar(
+            attr_df.sort_values("中心值", ascending=True),
+            x="中心值",
+            y="偏好指標",
+            orientation="h",
+            text="中心值",
+            title="分群中心值：哪些偏好最支持目前定位",
+        )
+        fig.update_layout(height=360)
+        st.plotly_chart(fig, width="stretch")
+
+    with st.expander("統計與分析方法說明", expanded=False):
+        st.markdown(
+            """
+            - **市場區隔：**使用 `KMeans_Final_Result.xlsx` 的 `Clustering_Data` 與 `Cluster_Summary`，將 28 種產品偏好原型分成三種可行銷客群。
+            - **商品表現：**使用 `ridge_logit_customer_specific_report_*.xlsx` 的 `Product_Summary`，計算對應商品的購買率、購買數與模型預測購買機率。
+            - **產品屬性：**使用 `正交設計_產品組合.xlsx` 對應品牌、價格、顏色、規格與 GPS，確認定位是否有商品可以承接。
+            - **評論痛點：**使用 `reviews_processed_classified.csv`，把評論轉成規格、功能、品質、外觀、價格等可操作痛點。
+            """
+        )
+
+    st.subheader("4｜定位如何轉成 Amazon 與廣告素材")
     landing = pd.DataFrame([
         ["Amazon 標題", profile["listing_focus"], "標題不要只塞關鍵字，要讓買家一眼知道這款解決什麼問題。"],
         ["五點描述", profile["claim"], "第一點先解決購買疑慮，第二點再講功能，第三點講品質或風格。"],
-        ["主圖 / A+ Content", profile["landing"], "用圖像降低理解成本，讓非技術買家也能判斷是否適合。"],
+        ["主圖 / A+ Content", profile.get("landing", "用規格表、情境圖與比較圖降低買家理解成本。"), "用圖像降低理解成本，讓非技術買家也能判斷是否適合。"],
         ["EDM / 再行銷", profile["ad_angle"], "依客群痛點改寫訊息，不用所有人收到同一種文案。"],
         ["短影音腳本", "3 秒痛點 → 5 秒解法 → 3 秒 CTA", "可銜接一對一行銷頁的 AI 素材提示。"],
     ], columns=["使用場景", "定位轉譯", "具體做法"])
@@ -1169,7 +1306,7 @@ def positioning_page():
 
     st.markdown(
         """
-        <div class="vv-note"><b>行銷判讀：</b>產品定位不是固定不變的 slogan。當目標市場切換時，商品頁主張、廣告素材與 EDM 話術也應跟著改變；這樣才會讓 STP 從簡報概念變成行銷執行流程。</div>
+        <div class="vv-note"><b>行銷判讀：</b>產品定位不能只是一句 slogan。它必須能被證據支持，也必須能轉成 Amazon 頁面、EDM、再行銷廣告與短影音素材。若後續資料顯示不同客群的轉換率更高，應回到目標市場頁調整權重，再讓產品定位與商品策略一起更新。</div>
         """,
         unsafe_allow_html=True,
     )
