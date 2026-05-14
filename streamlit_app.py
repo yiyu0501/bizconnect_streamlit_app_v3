@@ -406,6 +406,115 @@ def term_box():
             st.markdown(f"**{key}：**{value}")
 
 
+
+def infer_marketing_route(row) -> str:
+    """Translate product preference into a practical marketing content route."""
+    brand = str(row.get("Brand", "")).lower()
+    spec = str(row.get("Spec_Display", row.get("Spec", ""))).lower()
+    color = str(row.get("Color", "")).lower()
+    gps = str(row.get("GPS_Display", row.get("GPS", "")))
+    price = float(row.get("Price", 0) or 0)
+    if "motor" in brand or "npt" in spec:
+        return "技術規格型"
+    if any(c in color for c in ["米", "藍", "beige", "blue"]):
+        return "風格美學型"
+    if "有 gps" in gps.lower() or "gps" in gps.lower():
+        return "實用功能型"
+    if price and price <= 206:
+        return "價格誘因型"
+    return "主流實用型"
+
+
+def creative_package(route: str) -> dict:
+    packages = {
+        "技術規格型": {
+            "video": "影片A：技術規格／安裝確認",
+            "copy": "規格清楚、安裝更安心、降低買錯風險",
+            "channel": "Amazon Listing、搜尋廣告、EDM 技術型內容",
+            "image_style": "深色背景、規格標籤、安裝細節、專業工具感",
+        },
+        "實用功能型": {
+            "video": "影片B：實用功能／日常使用",
+            "copy": "功能完整、使用直覺、適合日常替換與升級",
+            "channel": "Meta 再行銷、EDM、Amazon Sponsored Products",
+            "image_style": "實裝情境、功能 icon、GPS 或功能重點 callout",
+        },
+        "風格美學型": {
+            "video": "影片C：車內風格／顏色搭配",
+            "copy": "不只可用，也要搭配你的車內風格",
+            "channel": "IG/Meta 視覺素材、Amazon 圖片區、A+ Content",
+            "image_style": "車內情境、內裝搭配、色系比較、質感光影",
+        },
+        "價格誘因型": {
+            "video": "影片D：限時優惠／高 CP 值",
+            "copy": "用更低門檻完成替換，限時優惠降低猶豫成本",
+            "channel": "促銷 EDM、再行銷廣告、優惠券受眾",
+            "image_style": "促銷標籤、價格比較、限時感、免運或折扣提示",
+        },
+        "主流實用型": {
+            "video": "影片B：實用功能／日常使用",
+            "copy": "主流款式、穩定可靠、適合多數替換需求",
+            "channel": "Amazon 主推頁、搜尋廣告、EDM 熱門商品區",
+            "image_style": "乾淨商品圖、黑白主流款比較、功能重點",
+        },
+    }
+    return packages.get(route, packages["主流實用型"])
+
+
+def offer_tier(probability: float, strategy_tag: str = "", rfm_label: str = "") -> tuple[str, str]:
+    """Suggest incentive strength without claiming exact willingness-to-pay."""
+    p = float(probability or 0)
+    label = str(rfm_label)
+    tag = str(strategy_tag)
+    if p >= 0.38 and "高" in label:
+        return "無折扣／會員感訊息", "購買意願高，先用新品、品質與規格信任溝通，不急著讓利。"
+    if p >= 0.32:
+        return "低誘因：0–5% 或免運", "顧客已有明顯偏好，用小誘因或免運推動即可。"
+    if p >= 0.22:
+        return "中誘因：5–10%", "需要一點促銷刺激，適合搭配限時優惠或組合包。"
+    if "需要檢討" in tag:
+        return "暫緩折扣，先修 Listing", "商品本身轉換表現偏弱，優先改善頁面與素材，不建議直接砸折扣。"
+    return "強誘因：10–15% 或清庫存券", "購買意願較低，若有庫存壓力可用較強誘因測試喚回。"
+
+
+def build_campaign_audience(recs: pd.DataFrame, products: pd.DataFrame, rfm: pd.DataFrame) -> pd.DataFrame:
+    """Create a practical audience table from top-1 recommendation for each customer."""
+    if recs.empty or products.empty:
+        return pd.DataFrame()
+    base = recs.sort_values(["Customer_ID", "Predicted_Probability"], ascending=[True, False]).groupby("Customer_ID", as_index=False).first()
+    cols = ["Product_Row", "Product_Label", "Brand", "Price", "Color", "Spec_Display", "GPS_Display", "Strategy_Tag"]
+    base = base.merge(products[[c for c in cols if c in products.columns]], on="Product_Row", how="left")
+    if not rfm.empty and "Customer_ID" in rfm.columns:
+        rfm_cols = [c for c in ["Customer_ID", "RFM_Label", "CAI_Label"] if c in rfm.columns]
+        base = base.merge(rfm[rfm_cols].drop_duplicates("Customer_ID"), on="Customer_ID", how="left")
+    base["行銷素材路線"] = base.apply(infer_marketing_route, axis=1)
+    base["建議影片素材"] = base["行銷素材路線"].map(lambda x: creative_package(x)["video"])
+    base["核心話術"] = base["行銷素材路線"].map(lambda x: creative_package(x)["copy"])
+    base["建議通路"] = base["行銷素材路線"].map(lambda x: creative_package(x)["channel"])
+    offer = base.apply(lambda r: offer_tier(r.get("Predicted_Probability", 0), r.get("Strategy_Tag", ""), r.get("RFM_Label", "")), axis=1)
+    base["優惠級距"] = [x[0] for x in offer]
+    base["優惠理由"] = [x[1] for x in offer]
+    base["預測購買機率(%)"] = base["Predicted_Probability"] * 100
+    return base
+
+
+def campaign_copy_templates(route: str, product_row: pd.Series, offer: str = "") -> dict:
+    pkg = creative_package(route)
+    brand = product_row.get("Brand", "本商品")
+    color = product_row.get("Color", "")
+    spec = product_row.get("Spec_Display", product_row.get("Spec", "規格"))
+    gps = product_row.get("GPS_Display", "")
+    product_name = product_row.get("Product_Label", f"{brand} {color} {spec}")
+    offer_text = f"本次建議優惠：{offer}。" if offer else ""
+    return {
+        "EDM 主旨": f"為你的安裝需求挑選：{brand} {spec} 推薦款",
+        "EDM 內文": f"我們依據你的商品偏好，推薦 {product_name}。這款商品主打 {pkg['copy']}。{offer_text}建議先確認規格，再完成下單，降低跨境購買後不相容的風險。",
+        "Meta/IG 廣告文案": f"怕買錯儀表規格？{brand} {spec} 款式幫你把安裝重點講清楚。{pkg['copy']}，現在就查看適合你的款式。",
+        "Amazon 五點描述": f"1. 清楚標示 {spec}，降低買錯規格風險\n2. {gps}，讓功能需求更清楚\n3. {color}外觀，適合車內搭配\n4. 適合替換與 DIY 安裝情境\n5. 建議搭配尺寸圖、規格對照表與安裝確認清單",
+        "AI 圖片 Prompt": f"Create a professional Amazon product image for an automotive gauge. Show a {color} gauge installed in a car dashboard. Add clean callout labels for {spec}, fitment guide, and easy installation. Style: {pkg['image_style']}. Premium, realistic, conversion-focused.",
+        "短影音腳本": f"3秒痛點：買錯規格很麻煩。5秒解法：用清楚的 {spec} 與安裝確認降低風險。5秒展示：{brand} {color} 儀表實裝與功能重點。3秒 CTA：立即查看適合你的款式。",
+    }
+
 def overview_page():
     render_header()
     st.header("首頁｜總覽與操作手冊")
@@ -451,7 +560,7 @@ def overview_page():
         ["3 產品定位", "把商品定位轉成可說服買家的訊息", "決定產品頁與廣告主張"],
         ["4 商品策略", "看哪些商品立即主推、哪些需要檢討", "決定上架與推廣優先順序"],
         ["5 產品推廣", "用曝光、價格、毛利率與廣告成本做試算", "決定預算與活動可行性"],
-        ["6 一對一行銷", "依 Customer_ID 產生推薦與廣告素材草稿", "執行 EDM、再行銷與客服推薦"],
+        ["6 準個人化行銷", "批次分配素材、優惠與投放通路，也可保留 Customer_ID 查詢", "執行 EDM、再行銷、AI 素材與 A/B 測試"],
     ], columns=["順序", "看什麼", "得到什麼決策"])
     st.dataframe(steps, width="stretch", hide_index=True)
 
@@ -679,46 +788,132 @@ def product_promotion_page():
 
 
 def recommendation_page():
-    st.header("顧客推薦｜一對一行銷與 AI 素材")
+    st.header("顧客推薦｜準個人化行銷與 AI 素材")
     recs = load_recommendations()
     products = load_product_summary()
     rfm = load_rfm()
-    if recs.empty:
-        st.info("目前找不到 Recommendation_Top5 資料。")
+    if recs.empty or products.empty:
+        st.info("目前找不到推薦模型或商品資料。")
         return
-    customer_ids = sorted(recs["Customer_ID"].dropna().astype(str).unique().tolist())
-    query = st.text_input("快速搜尋 Customer_ID", "")
-    filtered = [c for c in customer_ids if query.lower() in c.lower()] if query else customer_ids
-    selected = st.selectbox("選擇顧客", filtered[:1000])
-    cust = recs[recs["Customer_ID"] == selected].copy()
-    cust = cust.merge(products[["Product_Row", "Product_Label", "Brand", "Price", "Color", "Spec_Display", "GPS_Display", "Strategy_Tag"]], on="Product_Row", how="left")
-    cust = cust.sort_values("Predicted_Probability", ascending=False)
-    best = cust.iloc[0]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("最佳推薦商品", best["Product_Label"])
-    c2.metric("預測購買機率", f"{best['Predicted_Probability']*100:.2f}%")
-    if not rfm.empty and selected in set(rfm["Customer_ID"].astype(str)):
-        seg = rfm[rfm["Customer_ID"].astype(str) == selected].iloc[0]
-        c3.metric("RFM 分群", str(seg.get("RFM_Label", "未標示"))[:18])
-    else:
-        c3.metric("RFM 分群", "未對接")
+    st.markdown("""
+    <div class="vv-action"><b>本頁定位：</b>這裡不是要替每位顧客拍一支完全不同的廣告，而是建立「準個人化行銷」流程：
+    依據顧客偏好與推薦商品，把顧客分配到不同素材路線、話術、優惠級距與投放通路。這比所有人看到同一支廣告更精準，也比完全一人一廣告更可落地。</div>
+    """, unsafe_allow_html=True)
 
-    display = cust[["Product_Row", "Product_Label", "Predicted_Probability", "Strategy_Tag"]].copy()
-    display["Predicted_Probability"] = display["Predicted_Probability"].map(lambda x: f"{x*100:.2f}%")
-    st.dataframe(display, width="stretch", hide_index=True)
-    data_source("ridge_logit_customer_specific_report_*.xlsx", "Recommendation_Top5 工作表")
+    audience = build_campaign_audience(recs, products, rfm)
+    tab1, tab2, tab3, tab4 = st.tabs(["批次投放工作台", "素材與優惠規則", "單一顧客查詢", "A/B 測試與迭代"])
 
-    st.subheader("可直接交給 AI 設計工具的素材草稿")
-    edmsg = f"根據您的商品偏好，我們推薦 {best['Brand']} 的 {best['Color']}、{best['Spec_Display']} 款式。這款商品可降低規格選錯風險，適合需要穩定安裝與清楚規格的買家。"
-    amazon_bullets = f"1. 清楚標示 {best['Spec_Display']}，降低買錯規格風險\n2. {best['GPS_Display']}，適合明確功能需求買家\n3. {best['Color']}外觀，適合車內搭配\n4. 適合替換與 DIY 安裝情境\n5. 建議搭配規格確認圖與安裝前檢查表"
-    image_prompt = f"Create a professional Amazon product image for an automotive gauge. Show a {best['Color']} gauge installed in a car dashboard, with clean callout labels for {best['Spec_Display']}, fitment guide, and easy installation. Minimal, premium, technical style."
-    video_script = f"3秒痛點：買錯規格很麻煩。5秒解法：{best['Brand']} 提供清楚 {best['Spec_Display']} 與安裝確認。3秒行動：立即查看適合你的儀表款式。"
-    tabs = st.tabs(["EDM 文案", "Amazon 五點描述", "AI 圖片 Prompt", "短影音腳本"])
-    tabs[0].text_area("EDM / 再行銷文案", edmsg, height=130)
-    tabs[1].text_area("Amazon Bullet Points", amazon_bullets, height=170)
-    tabs[2].text_area("可貼到 Canva / Firefly / AI 圖像工具", image_prompt, height=150)
-    tabs[3].text_area("可貼到 CapCut / 短影音腳本工具", video_script, height=130)
+    with tab1:
+        st.subheader("批次投放工作台：一次找到適合某類素材的客群")
+        st.caption("行銷人員日常使用時，不必一個一個查 Customer_ID；先選素材路線、商品或優惠級距，再輸出受眾名單做 EDM、再行銷或廣告測試。")
+        if audience.empty:
+            st.info("目前無法建立批次投放名單。")
+        else:
+            f1, f2, f3, f4 = st.columns(4)
+            route_filter = f1.multiselect("素材路線", sorted(audience["行銷素材路線"].dropna().unique().tolist()), default=[])
+            tag_filter = f2.multiselect("商品策略", sorted(audience["Strategy_Tag"].dropna().unique().tolist()), default=[])
+            offer_filter = f3.multiselect("優惠級距", sorted(audience["優惠級距"].dropna().unique().tolist()), default=[])
+            product_filter = f4.multiselect("推薦商品編號", sorted(audience["Product_Row"].dropna().astype(int).unique().tolist()), default=[])
+
+            batch = audience.copy()
+            if route_filter:
+                batch = batch[batch["行銷素材路線"].isin(route_filter)]
+            if tag_filter:
+                batch = batch[batch["Strategy_Tag"].isin(tag_filter)]
+            if offer_filter:
+                batch = batch[batch["優惠級距"].isin(offer_filter)]
+            if product_filter:
+                batch = batch[batch["Product_Row"].isin(product_filter)]
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("符合條件顧客", f"{len(batch):,}")
+            k2.metric("平均預測購買機率", f"{batch['預測購買機率(%)'].mean():.2f}%" if len(batch) else "0.00%")
+            k3.metric("主要素材路線", batch["行銷素材路線"].mode().iloc[0] if len(batch) else "—")
+            k4.metric("主要優惠級距", batch["優惠級距"].mode().iloc[0] if len(batch) else "—")
+
+            summary = batch.groupby(["行銷素材路線", "建議影片素材", "優惠級距"], dropna=False).agg(
+                顧客數=("Customer_ID", "nunique"),
+                平均預測購買機率=("預測購買機率(%)", "mean"),
+                代表商品=("Product_Label", lambda x: x.mode().iloc[0] if not x.mode().empty else "—"),
+                核心話術=("核心話術", lambda x: x.mode().iloc[0] if not x.mode().empty else "—"),
+            ).reset_index()
+            if not summary.empty:
+                summary["平均預測購買機率"] = summary["平均預測購買機率"].map(lambda x: f"{x:.2f}%")
+            st.dataframe(summary, width="stretch", hide_index=True)
+            data_source("ridge_logit_customer_specific_report_*.xlsx + RFM_CAI 統整.xlsx", "以每位顧客 Top 1 推薦商品建立批次投放名單")
+
+            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
+            csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig")
+            st.download_button("下載目前篩選名單 CSV", csv, file_name="personalized_campaign_audience.csv", mime="text/csv")
+
+    with tab2:
+        st.subheader("素材與優惠規則：用有限素材做準個人化")
+        rule_df = pd.DataFrame([
+            ["技術規格型", "影片A：技術規格／安裝確認", "規格精準、安裝安心、降低買錯", "NPT / SAE 規格圖、安裝步驟、性能感", "高意願可少折扣；中意願給免運或 5%"],
+            ["實用功能型", "影片B：實用功能／日常使用", "GPS、功能完整、穩定可靠", "功能 icon、使用情境、比較表", "用 5–10% 或組合優惠促進轉換"],
+            ["風格美學型", "影片C：車內風格／顏色搭配", "內裝搭配、特殊色系、質感", "實裝圖、車內情境、色系比較", "少折扣，強調稀有感與視覺價值"],
+            ["價格誘因型", "影片D：限時優惠／高 CP 值", "限時、免運、組合價、CP 值", "促銷圖卡、倒數、優惠券", "10–15% 或清庫存券，僅給需要刺激者"],
+        ], columns=["素材路線", "主影片", "話術方向", "設計重點", "優惠原則"])
+        st.dataframe(rule_df, width="stretch", hide_index=True)
+        st.markdown("""
+        <div class="vv-note"><b>行銷邏輯：</b>不是 1,024 位顧客各拍一支影片，而是把「商品推薦 × 偏好路線 × 話術 × 優惠」模組化。
+        例如同一支技術規格影片，可以搭配不同商品、不同規格文案與不同優惠級距，形成多組個人化素材。</div>
+        """, unsafe_allow_html=True)
+
+    with tab3:
+        st.subheader("單一顧客查詢：保留一對一推薦，但用來產生素材，不只看 Top 5")
+        customer_ids = sorted(recs["Customer_ID"].dropna().astype(str).unique().tolist())
+        query = st.text_input("快速搜尋 Customer_ID", "")
+        filtered = [c for c in customer_ids if query.lower() in c.lower()] if query else customer_ids
+        selected = st.selectbox("選擇顧客", filtered[:1000])
+        cust = recs[recs["Customer_ID"] == selected].copy()
+        cust = cust.merge(products[["Product_Row", "Product_Label", "Brand", "Price", "Color", "Spec_Display", "GPS_Display", "Strategy_Tag"]], on="Product_Row", how="left")
+        cust = cust.sort_values("Predicted_Probability", ascending=False)
+        best = cust.iloc[0]
+        route = infer_marketing_route(best)
+        offer, reason = offer_tier(best.get("Predicted_Probability", 0), best.get("Strategy_Tag", ""), "")
+        templates = campaign_copy_templates(route, best, offer)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("最佳推薦商品", best["Product_Label"])
+        c2.metric("預測購買機率", f"{best['Predicted_Probability']*100:.2f}%")
+        c3.metric("素材路線", route)
+        c4.metric("優惠建議", offer)
+        st.caption(f"優惠判斷：{reason}")
+
+        display = cust[["Product_Row", "Product_Label", "Predicted_Probability", "Strategy_Tag"]].copy()
+        display["Predicted_Probability"] = display["Predicted_Probability"].map(lambda x: f"{x*100:.2f}%")
+        st.dataframe(display, width="stretch", hide_index=True)
+        data_source("ridge_logit_customer_specific_report_*.xlsx", "Recommendation_Top5 工作表；此處以單一顧客查詢生成素材草稿")
+
+        st.subheader("AI 素材輸出草稿")
+        tabs = st.tabs(["EDM", "Meta/IG 廣告", "Amazon 五點", "AI 圖片 Prompt", "短影音腳本"])
+        tabs[0].text_area("EDM 主旨", templates["EDM 主旨"], height=80)
+        tabs[0].text_area("EDM 內文", templates["EDM 內文"], height=150)
+        tabs[1].text_area("Meta/IG 廣告文案", templates["Meta/IG 廣告文案"], height=130)
+        tabs[2].text_area("Amazon Bullet Points", templates["Amazon 五點描述"], height=170)
+        tabs[3].text_area("可貼到 Canva / Firefly / AI 圖像工具", templates["AI 圖片 Prompt"], height=150)
+        tabs[4].text_area("可貼到 CapCut / 短影音腳本工具", templates["短影音腳本"], height=130)
+
+    with tab4:
+        st.subheader("A/B 測試與迭代：讓創意變成可驗證的成效")
+        st.markdown("""
+        <div class="vv-warning"><b>重要原則：</b>目前資料只能支撐「推薦與素材分配建議」，不能保證每個人一定會轉換。
+        真正的效益要靠 A/B Test 驗證：把客群分成控制組與測試組，追蹤點擊率、轉換率、客單價與 ROAS，再回來調整素材與優惠。</div>
+        """, unsafe_allow_html=True)
+        test_df = pd.DataFrame([
+            ["測試假設", "技術規格型客群看到規格／安裝確認素材，轉換率會高於一般商品廣告"],
+            ["控制組", "同商品一般廣告，不分話術與優惠"],
+            ["測試組", "依素材路線分配技術型、實用型、風格型或促銷型素材"],
+            ["主要 KPI", "CTR 點擊率、CVR 轉換率、AOV 客單價、ROAS 廣告收益"],
+            ["追蹤方式", "使用 UTM、優惠碼、EDM 名單標籤或廣告受眾名稱記錄"],
+            ["迭代方式", "每 1–2 週更新素材表現，保留高轉換素材，淘汰低轉換素材"],
+        ], columns=["項目", "做法"])
+        st.dataframe(test_df, width="stretch", hide_index=True)
+        st.markdown("""
+        <div class="vv-action"><b>競賽呈現重點：</b>我們不是宣稱現在已經做到完全一人一價，而是提出一套可落地、可測試、可迭代的準個人化行銷流程，讓廠商逐步從大眾廣告走向分眾素材與個人化優惠。</div>
+        """, unsafe_allow_html=True)
 
 
 def customer_list_page():
@@ -799,7 +994,7 @@ pages = {
     "產品定位｜技詮如何被記住": positioning_page,
     "商品策略｜主推與檢討清單": product_strategy_page,
     "產品推廣｜廣告與效益試算": product_promotion_page,
-    "顧客推薦｜一對一行銷與 AI 素材": recommendation_page,
+    "顧客推薦｜準個人化行銷與 AI 素材": recommendation_page,
     "顧客名單｜RFM/CAI 策略": customer_list_page,
     "評論洞察｜痛點與 Listing 改善": review_insights_page,
 }
