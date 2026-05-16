@@ -89,7 +89,7 @@ SOURCE_ITEMS = [
     ("KMeans_Final_Result.xlsx", "市場區隔與目標市場排序", "用 28 種產品偏好原型判斷三種可行銷客群。"),
     ("ridge_logit_customer_specific_report_*.xlsx", "購買率與推薦模型", "提供 Product_Summary 與每位顧客 Top 5 推薦。"),
     ("正交設計_產品組合.xlsx", "產品屬性對照", "對應品牌、價格、顏色、規格、GPS 與 ASIN。"),
-    ("RFM_CAI 統整.xlsx", "顧客名單策略", "用於顧客價值標籤、CAI 分群與名單經營。"),
+    ("RFM 顧客標籤檔", "顧客名單策略", "以前台 RFM 顧客價值分群為主要行銷名單依據。"),
     ("reviews_processed_classified.csv", "評論痛點與動機", "用評論內容判讀功能、規格、品質、外觀與價格需求。"),
     ("reviews_summary_processed.csv", "ASIN 評論摘要", "彙整各商品評論數、平均星等與正負評。"),
 ]
@@ -347,7 +347,7 @@ def load_rfm() -> pd.DataFrame:
             cai = cai.rename(columns={"顧客分群": "CAI_Label"})
         if "Customer_ID" in cai.columns:
             cai["Customer_ID"] = cai["Customer_ID"].astype(str)
-        cai = cai[[c for c in ["Customer_ID", "CAI", "CAI_Label"] if c in cai.columns]]
+        cai = cai[[c for c in ["Customer_ID", "CAI"] if c in cai.columns]]
     if rfm.empty and cai.empty:
         return pd.DataFrame()
     if rfm.empty:
@@ -535,7 +535,7 @@ def build_campaign_audience(recs: pd.DataFrame, products: pd.DataFrame, rfm: pd.
     cols = ["Product_Row", "Product_Label", "Brand", "Price", "Color", "Spec_Display", "GPS_Display", "Strategy_Tag"]
     base = base.merge(products[[c for c in cols if c in products.columns]], on="Product_Row", how="left")
     if not rfm.empty and "Customer_ID" in rfm.columns:
-        rfm_cols = [c for c in ["Customer_ID", "RFM_Label", "CAI_Label"] if c in rfm.columns]
+        rfm_cols = [c for c in ["Customer_ID", "RFM_Label"] if c in rfm.columns]
         base = base.merge(rfm[rfm_cols].drop_duplicates("Customer_ID"), on="Customer_ID", how="left")
     base["行銷素材路線"] = base.apply(infer_marketing_route, axis=1)
     base["建議影片素材"] = base["行銷素材路線"].map(lambda x: creative_package(x)["video"])
@@ -1591,11 +1591,11 @@ def recommendation_page():
             <div class="vv-note"><b>為什麼不直接串接 AI API？</b>競賽版先採「可複製 Prompt」較穩定，避免 API 金鑰、帳號權限與顧客資料外流問題。正式企業版可再串接 OpenAI / Gemini / Canva / CapCut API 或內部 CRM。</div>
             """, unsafe_allow_html=True)
 
-            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
+            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label"] if c in batch.columns]
             if export_cols:
                 csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig")
                 st.download_button("下載本次活動受眾名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_campaign_audience.csv", mime="text/csv")
-            data_source("ridge_logit_customer_specific_report_*.xlsx + RFM_CAI 統整.xlsx", "以推薦模型建立受眾，以行銷人員調整的素材路線與優惠級距輸出活動 Brief")
+            data_source("推薦模型輸出 + RFM 顧客標籤檔", "以推薦模型建立受眾，並輔以 RFM 顧客價值分群輸出活動 Brief")
 
     with tab2:
         st.subheader("批次投放工作台：一次找到適合某類素材的客群")
@@ -1634,9 +1634,9 @@ def recommendation_page():
             if not summary.empty:
                 summary["平均預測購買機率"] = summary["平均預測購買機率"].map(lambda x: f"{x:.2f}%")
             st.dataframe(summary, width="stretch", hide_index=True)
-            data_source("ridge_logit_customer_specific_report_*.xlsx + RFM_CAI 統整.xlsx", "以每位顧客 Top 1 推薦商品建立批次投放名單")
+            data_source("推薦模型輸出 + RFM 顧客標籤檔", "以每位顧客 Top 1 推薦商品建立批次投放名單")
 
-            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
+            export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label"] if c in batch.columns]
             csv = batch[export_cols].to_csv(index=False).encode("utf-8-sig") if export_cols else b""
             st.download_button("下載目前篩選名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_personalized_campaign_audience.csv", mime="text/csv")
 
@@ -1713,17 +1713,18 @@ def recommendation_page():
 
 
 def customer_list_page():
-    st.header("顧客名單｜RFM／CAI 與 22 產品組合策略")
+    st.header("顧客名單｜RFM 行銷策略與 22 產品組合客群")
+    st.caption("本頁主要使用 RFM 顧客價值分群建立行銷名單策略；CAI 目前可用樣本較少，因此不作為本階段主要決策依據。")
     rfm = load_rfm()
     recs = load_recommendations()
     products = load_product_summary()
 
-    st.markdown("名單本身沒有價值，必須轉成行銷動作。本頁保留 RFM／CAI 名單策略，同時新增以 22 個產品組合為基礎的客群操作方式，讓行銷人員知道每一群該推什麼、怎麼推、用什麼素材。")
-    tab1, tab2 = st.tabs(["RFM／CAI 名單策略", "22 產品組合客群策略"])
+    st.markdown("名單本身沒有價值，必須轉成行銷動作。本頁以 RFM 顧客價值分群為主，搭配 22 個產品組合客群，協助行銷人員判斷每一群該推什麼、怎麼推、用什麼素材。")
+    tab1, tab2 = st.tabs(["RFM 名單策略", "22 產品組合客群策略"])
 
     with tab1:
         if rfm.empty:
-            st.info("目前找不到 RFM／CAI 資料。")
+            st.info("目前找不到 RFM 顧客價值分群資料。")
         else:
             strategy_df = pd.DataFrame([
                 ["高價值／活躍顧客", "提高回購與客單", "新品預告、會員專屬優惠、高單價款推薦", "EDM、會員訊息、再行銷名單"],
@@ -1739,7 +1740,7 @@ def customer_list_page():
             fig = px.bar(counts, x="Customer_Count", y="RFM_Label", orientation="h", title="RFM 顧客價值分群人數")
             fig.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
             st.plotly_chart(fig, width="stretch")
-            data_source("RFM_CAI 統整.xlsx", "RFM 與 CAI 顧客標籤；適合做名單經營，但需搭配可聯絡通路才能實際投放")
+            data_source("RFM_CAI 統整.xlsx", "以前台 RFM 顧客價值分群為主要依據，將名單轉為可執行的行銷策略。")
 
             selected = st.selectbox("選擇分群查看名單", counts["RFM_Label"].tolist())
             seg = rfm[rfm["RFM_Label"] == selected].copy()
@@ -1799,7 +1800,7 @@ def customer_list_page():
             建議素材／通路：{first.get('建議素材／通路', '—')}<br>
             優惠級距：{first.get('優惠級距', '—')}</div>
             """, unsafe_allow_html=True)
-            cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "產品客群組", "預測購買機率(%)", "行銷素材路線", "優惠級距", "建議通路", "RFM_Label", "CAI_Label"] if c in sub.columns]
+            cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "產品客群組", "預測購買機率(%)", "行銷素材路線", "優惠級距", "建議通路", "RFM_Label"] if c in sub.columns]
             st.dataframe(sub[cols].sort_values("預測購買機率(%)", ascending=False).head(200), width="stretch", hide_index=True)
             csv = sub[cols].to_csv(index=False).encode("utf-8-sig")
             st.download_button("下載此產品組合顧客名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_product_{int(product_select)}_audience.csv", mime="text/csv")
@@ -2071,7 +2072,7 @@ def campaign_workspace_tab(audience: pd.DataFrame, products: pd.DataFrame):
     summary["平均預測購買機率"] = summary["平均預測購買機率"].map(lambda x: f"{x:.2f}%")
     st.dataframe(summary.head(12), width="stretch", hide_index=True)
 
-    export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label", "CAI_Label"] if c in batch.columns]
+    export_cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "Brand", "Color", "Spec_Display", "GPS_Display", "預測購買機率(%)", "行銷素材路線", "建議影片素材", "核心話術", "優惠級距", "優惠理由", "建議通路", "RFM_Label"] if c in batch.columns]
     csv = batch[export_cols].sort_values("預測購買機率(%)", ascending=False).to_csv(index=False).encode("utf-8-sig")
     st.download_button("下載本次活動受眾 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_campaign_audience.csv", mime="text/csv")
 
@@ -2180,15 +2181,16 @@ def rfm_strategy_bucket(label: str) -> tuple[str, str, str, str]:
 
 
 def customer_list_page():
-    st.header("顧客名單｜RFM/CAI 與 22 產品組合策略")
+    st.header("顧客名單｜RFM 行銷策略與 22 產品組合客群")
+    st.caption("本頁主要使用 RFM 顧客價值分群建立行銷名單策略；CAI 目前可用樣本較少，因此不作為本階段主要決策依據。")
     rfm = load_rfm()
     recs = load_recommendations()
     products = load_product_summary()
-    tab1, tab2 = st.tabs(["RFM／CAI 名單策略", "22 產品組合客群策略"])
+    tab1, tab2 = st.tabs(["RFM 名單策略", "22 產品組合客群策略"])
 
     with tab1:
         if rfm.empty:
-            st.info("目前找不到 RFM／CAI 資料。")
+            st.info("目前找不到 RFM 顧客價值分群資料。")
         else:
             tmp = rfm.copy()
             mapped = tmp["RFM_Label"].apply(rfm_strategy_bucket)
@@ -2205,11 +2207,11 @@ def customer_list_page():
             fig = px.bar(summary, x="顧客數", y="RFM_Label", color="顧客類型", orientation="h", title="RFM 分群人數與對應行銷類型")
             fig.update_layout(height=560, yaxis={"categoryorder": "total ascending"})
             st.plotly_chart(fig, width="stretch")
-            data_source("RFM_CAI 統整.xlsx", "RFM 與 CAI 顧客標籤；本頁將原始分群翻譯為可執行的行銷名單策略")
+            data_source("RFM_CAI 統整.xlsx", "本頁以前台 RFM 顧客價值分群為主要依據；CAI 樣本較少，僅作後續補充方向。")
 
             selected_type = st.selectbox("依行銷類型篩選名單", ["全部"] + sorted(tmp["顧客類型"].dropna().unique().tolist()))
             view = tmp if selected_type == "全部" else tmp[tmp["顧客類型"] == selected_type]
-            show_cols = [c for c in ["Customer_ID", "RFM_Label", "CAI_Label", "顧客類型", "行銷目標", "建議做法", "建議通路"] if c in view.columns]
+            show_cols = [c for c in ["Customer_ID", "RFM_Label", "顧客類型", "行銷目標", "建議做法", "建議通路"] if c in view.columns]
             st.dataframe(view[show_cols].head(300), width="stretch", hide_index=True)
             csv = view[show_cols].to_csv(index=False).encode("utf-8-sig")
             st.download_button("下載目前篩選名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_rfm_strategy_list.csv", mime="text/csv")
@@ -2253,7 +2255,7 @@ def customer_list_page():
             建議素材／通路：{first.get('建議素材／通路', '—')}<br>
             優惠級距：{first.get('優惠級距', '—')}</div>
             """, unsafe_allow_html=True)
-            cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "產品客群組", "預測購買機率(%)", "行銷素材路線", "優惠級距", "建議通路", "RFM_Label", "CAI_Label"] if c in sub.columns]
+            cols = [c for c in ["Customer_ID", "Product_Row", "Product_Label", "產品客群組", "預測購買機率(%)", "行銷素材路線", "優惠級距", "建議通路", "RFM_Label"] if c in sub.columns]
             st.dataframe(sub[cols].sort_values("預測購買機率(%)", ascending=False).head(200), width="stretch", hide_index=True)
             csv = sub[cols].to_csv(index=False).encode("utf-8-sig")
             st.download_button("下載此產品組合顧客名單 CSV", csv, file_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_product_{int(product_select)}_audience.csv", mime="text/csv")
@@ -2357,7 +2359,7 @@ pages = {
     "商品策略｜主推與檢討清單": product_strategy_page,
     "產品推廣｜廣告與效益試算": product_promotion_page,
     "顧客推薦｜準個人化行銷與 AI 素材": recommendation_page,
-    "顧客名單｜RFM/CAI 策略": customer_list_page,
+    "顧客名單｜RFM 策略": customer_list_page,
     "評論洞察｜痛點與 Listing 改善": review_insights_page,
 }
 
@@ -2369,7 +2371,7 @@ NAV_META = {
     "商品策略｜主推與檢討清單": {"label": "04  Product Strategy\n商品策略｜主推與檢討清單", "desc": "依目前定位判斷商品角色、推廣優先順序與檢討方向。"},
     "產品推廣｜廣告與效益試算": {"label": "05  Promotion Simulator\n產品推廣｜廣告與效益試算", "desc": "用曝光、毛利率與廣告成本模擬推廣效益。"},
     "顧客推薦｜準個人化行銷與 AI 素材": {"label": "06  Personalized Marketing\n顧客推薦｜AI素材與優惠分配", "desc": "把顧客推薦轉成素材路線、話術、優惠與 AI 產出提示。"},
-    "顧客名單｜RFM/CAI 策略": {"label": "07  Customer List Strategy\n顧客名單｜RFM/CAI 策略", "desc": "將顧客名單轉成不同經營策略。"},
+    "顧客名單｜RFM 策略": {"label": "07  Customer List Strategy\n顧客名單｜RFM 行銷策略", "desc": "將 RFM 顧客價值分群轉成不同經營策略。"},
     "評論洞察｜痛點與 Listing 改善": {"label": "08  Review Insights\n評論洞察｜痛點與 Listing 改善", "desc": "把評論痛點轉成 Amazon Listing 與客服改善方向。"},
 }
 
