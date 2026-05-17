@@ -7,7 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-APP_TITLE = "PEP with VivaVictors｜Marketing Dashboard"
+APP_TITLE = "MMR with VivaVictors｜Marketing Dashboard"
 APP_SUBTITLE = "跨境電商日常行銷工作台：市場區隔、目標客群、產品定位、商品推廣與一對一行銷"
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -104,7 +104,7 @@ GLOSSARY_ITEMS = [
     ("準個人化行銷", "不是每人一支廣告，而是依客群、推薦商品與偏好分配素材、話術與優惠。"),
 ]
 
-st.set_page_config(page_title="PEP with VivaVictors", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="MMR with VivaVictors", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 CUSTOM_CSS = """
 <style>
@@ -579,7 +579,7 @@ def campaign_brief_prompt(route: str, offer: str, batch: pd.DataFrame, objective
         avg_prob = batch["預測購買機率(%)"].mean() if "預測購買機率(%)" in batch.columns else 0
         top_product = batch["Product_Label"].mode().iloc[0] if "Product_Label" in batch.columns and not batch["Product_Label"].mode().empty else "尚未選定"
         top_message = batch["核心話術"].mode().iloc[0] if "核心話術" in batch.columns and not batch["核心話術"].mode().empty else "尚未產生"
-    return f"""你是一位跨境電商行銷企劃，請根據以下資料，產出可用於 Amazon / EDM / Meta 廣告 / 短影音的行銷素材草稿。\n\n【專案背景】\n品牌／廠商：技銓 VivaVictors / PEP with VivaVictors\n產品類型：汽車儀表、GPS 儀表、替換型儀表與相關配件\n目前定位：降低跨境買家買錯規格、安裝不合與功能不確定的風險。\n\n【本次活動目標】\n{objective}\n\n【受眾與資料狀態】\n受眾人數：約 {audience_size:,} 人\n平均預測購買機率：約 {avg_prob:.2f}%\n主要推薦商品：{top_product}\n素材路線：{route}\n優惠級距：{offer}\n目前對應影片素材：{video_asset}\n核心話術：{top_message}\n\n【請輸出】\n1. 一段 15 秒短影音腳本，分成 0-3 秒痛點、3-8 秒產品解法、8-12 秒證據、12-15 秒 CTA。\n2. Amazon Listing 主圖與 A+ Content 的版面建議。\n3. 5 個 Amazon bullet points。\n4. 2 個 EDM 主旨與一段 EDM 內文。\n5. 3 則 Meta / IG 廣告文案。\n6. 一段可以貼到 AI 圖像或影片工具的 prompt。\n\n【語氣限制】\n請用專業、乾淨、跨境電商可用的語氣，不要誇大療效或保證轉換率。強調規格確認、安裝安心、功能可靠與降低買錯風險。\n\n【補充要求】\n{custom_note if custom_note else '無'}\n"""
+    return f"""你是一位跨境電商行銷企劃，請根據以下資料，產出可用於 Amazon / EDM / Meta 廣告 / 短影音的行銷素材草稿。\n\n【專案背景】\n品牌／廠商：技銓 VivaVictors / MMR\n產品類型：汽車儀表、GPS 儀表、替換型儀表與相關配件\n目前定位：降低跨境買家買錯規格、安裝不合與功能不確定的風險。\n\n【本次活動目標】\n{objective}\n\n【受眾與資料狀態】\n受眾人數：約 {audience_size:,} 人\n平均預測購買機率：約 {avg_prob:.2f}%\n主要推薦商品：{top_product}\n素材路線：{route}\n優惠級距：{offer}\n目前對應影片素材：{video_asset}\n核心話術：{top_message}\n\n【請輸出】\n1. 一段 15 秒短影音腳本，分成 0-3 秒痛點、3-8 秒產品解法、8-12 秒證據、12-15 秒 CTA。\n2. Amazon Listing 主圖與 A+ Content 的版面建議。\n3. 5 個 Amazon bullet points。\n4. 2 個 EDM 主旨與一段 EDM 內文。\n5. 3 則 Meta / IG 廣告文案。\n6. 一段可以貼到 AI 圖像或影片工具的 prompt。\n\n【語氣限制】\n請用專業、乾淨、跨境電商可用的語氣，不要誇大療效或保證轉換率。強調規格確認、安裝安心、功能可靠與降低買錯風險。\n\n【補充要求】\n{custom_note if custom_note else '無'}\n"""
 
 
 def video_material_library(user_assets: dict | None = None) -> pd.DataFrame:
@@ -720,7 +720,7 @@ def market_segmentation_page():
                 f"""
                 <div class="vv-card">
                 <h4 style="margin:.1rem 0;">第 {cluster} 群｜{cfg.get('name', row['Segment_Name'])}</h4>
-                <b>占比：</b>{row.get('Share', 0):.1f}%｜<b>樣本：</b>{int(row.get('Customer_Count', 0))} 種產品偏好原型<br>
+                <b>占比：</b>{row.get('Share', 0):.1f}%<br>
                 <b>行銷角色：</b>{cfg.get('business_name', '')}<br>
                 <b>使用情境：</b>{cfg.get('priority', '')}
                 </div>
